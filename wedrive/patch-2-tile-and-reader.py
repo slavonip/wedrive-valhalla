@@ -15,7 +15,7 @@ def patch(path, old, new, why, count=1):
     global edits
     p = os.path.join(SRC, path)
     s = io.open(p, encoding="utf-8").read()
-    if new.strip() and "WEDRIVE" in new and new.split("WEDRIVE", 1)[1][:40] in s:
+    if "WEDRIVE" in new and new.split("WEDRIVE", 1)[1][:40] in s:
         print(f"   already applied: {path} — {why}")
         return
     assert s.count(old) == count, \
@@ -67,11 +67,12 @@ patch("src/baldr/graphtile.cc",
       "constructor records the region")
 
 # ── 3. GraphReader: a directory per region ──────────────────────────────────────────────────
+# `virtual graph_tile_ptr GetGraphTile(const GraphId&)` appears TWICE in the header: once in
+# GraphReader and once in LimitedGraphReader, a thin facade near the end of the file. The anchor
+# below is the two-argument overload, which only GraphReader has.
 patch("valhalla/baldr/graphreader.h",
-      "  virtual graph_tile_ptr GetGraphTile(const GraphId& graphid);",
-      """  virtual graph_tile_ptr GetGraphTile(const GraphId& graphid);
-
-  /**
+      """  graph_tile_ptr& GetGraphTile(const GraphId& graphid, graph_tile_ptr& tile) {""",
+      """  /**
    * WEDRIVE: register an independently built region.
    *
    * Each region is a Mjolnir run that knew nothing of the others, so two regions may hold the
@@ -94,8 +95,20 @@ patch("valhalla/baldr/graphreader.h",
   /** WEDRIVE: how many independently built regions are registered. */
   size_t RegionCount() const {
     return wedrive_region_dirs_.size();
-  }""",
+  }
+
+  graph_tile_ptr& GetGraphTile(const GraphId& graphid, graph_tile_ptr& tile) {""",
       "AddRegion / TileDirForRegion")
+
+# The member itself. `tile_dir_` is declared in the protected/private section; put ours beside it.
+patch("valhalla/baldr/graphreader.h",
+      "  const std::string tile_dir_;",
+      """  const std::string tile_dir_;
+
+  // WEDRIVE: one tile directory per independently built region. Empty in a stock setup, in which
+  // case TileDirForRegion always returns tile_dir_ and nothing behaves differently.
+  std::unordered_map<uint32_t, std::string> wedrive_region_dirs_;""",
+      "the region -> directory map")
 
 patch("src/baldr/graphreader.cc",
       "  graph_tile_ptr tile = GraphTile::Create(tile_dir_, base, std::move(traffic_memory));",
