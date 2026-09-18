@@ -97,6 +97,26 @@ Three consequences:
 * **Non-determinism is off the list of explanations for 31/0.** What remains is input context —
   which makes the dependency closure the next thing to measure rather than one of several.
 
+## WHERE THIS STANDS — four experiments, none of them a patch
+
+| | question | answer |
+|---|---|---|
+| **1** | is the builder deterministic for identical input? | **YES** — 114/114 byte-identical over five builds at 1, 4 and 22 threads. #5473 is not our cause. |
+| **2** | how far does ONE OSM edit reach? | an attribute edit: 1 tile. A topology edit that also split a level-0 road: 45 of 114. Nothing outside the affected 4° cell. |
+| **3** | how far does a CLEAN local edit reach? | 6 tiles of 114; 8 on a tile boundary. The NodeTransition mechanism is demonstrated — 315 of 315 changed words in a tile six rings away resolve to references into the renumbered level-0 tile. |
+| **4** | can one country be updated while neighbours stay behind? | **the closure is causally necessary** — without it 5 of 8 routes tear, with geometry jumps of 6–382 km; with it, 8 of 8 match the reference by geometry SHA. Damage reaches routes that never enter the updated country. |
+
+**The number the architecture turns on is still missing.** Experiment 4's `Zall/X = 212 %` is an
+upper observed bound, not the cost of a minimal correct update. The closure was never computed:
+the GraphId scan written for it failed its own negative control (1 690 chance matches against
+1 423 claimed hits), so the set used was simply "every tile that differs".
+
+**Experiment 5 is therefore `Zmin`** — a structural decode of `NodeInfo`, `DirectedEdge`,
+`NodeTransition`, hierarchy and shortcuts, identifying a reference by where it SITS rather than by
+what it resembles; then the requirement that removing any single closure tile reintroduces an
+observable defect. Until that exists, whether independent country updates are worth having is
+not answerable, and neither is any decision about patching Valhalla.
+
 ## Research order — evidence before patches
 
 1. One identical Moldova PBF, two clean stock-3.6.3 builds. Deterministic or not?
