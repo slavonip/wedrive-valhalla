@@ -58,16 +58,40 @@ This separates two goals that are easy to conflate, and only the second is what 
   node into a sorted contiguous array shifts every later index, so a neighbouring tile's
   `endnode` reference silently points at the wrong node.
 
-## Why determinism matters even if stability turns out to be too expensive
+## A HYPOTHESIS, recorded as one — determinism may make a rebuild local
 
-It is what makes a rebuild LOCAL. Rebuild tile T and its ids shift; neighbour N must fix its
-outgoing references into T — but N's own ids come from N's own unchanged input, so with a
-deterministic builder **N's numbering does not move, and nothing referencing N needs rebuilding.**
-The cascade stops at one ring. Without determinism it stops nowhere.
+Not a finding. Nothing here has measured it, and it is written down only so the next experiment
+has something to refute.
+
+*If* the builder is deterministic, then rebuilding tile T shifts T's ids, and neighbour N must fix
+its outgoing references into T — but N's own ids come from N's own unchanged input, so N's
+numbering might not move, and tiles referencing N might not need rebuilding. That would stop the
+cascade at one ring. Without determinism it would stop nowhere.
+
+**Whether it actually stops there is experiment 2**, and the vertical direction is the doubtful
+one: an L0 tile is 4°x4° and holds `NodeTransition`s into all 256 L2 tiles beneath it, so a single
+changed L2 tile obliges a rebuild of an L0 tile shared by several countries.
 
 Determinism alone also buys delta downloads: today a month's rebuild is measured at 74.6 % of
 tiles changed, which would move 92 % of a package. How much of that is real OSM change and how
-much is index churn is **unknown**, and is one of the cheapest things here to find out.
+much is index churn was **unknown** — and experiment 1 has now largely answered it.
+
+## MEASURED 2026-09-18 — experiment 1: stock 3.6.3 IS deterministic
+
+Five clean builds of one fixed Moldova PBF (sha256 `9adf5733...5ae8`) produced **114 of 114
+byte-identical tiles**, with an identical digest over the whole tile set, at **1, 4 and 22
+threads**. Full write-up in `EXPERIMENT-1.md`.
+
+Three consequences:
+
+* **#5473 is NOT our cause.** The code it names is unchanged in 3.6.3 and there is no
+  `deterministic_edge_indexes` option, yet the output is stable — because `Edge::operator<` falls
+  through to `llindex_`, which is unique per edge. (It does tie for two distinct *self-loop* edges
+  at one node, which is a plausible route to the behaviour the issue reports on other data.)
+* **The 74.6 % of tiles changing in 16 days is real OSM change, not index churn.** A delta is
+  therefore genuinely expensive, and that measurement stands as it was.
+* **Non-determinism is off the list of explanations for 31/0.** What remains is input context —
+  which makes the dependency closure the next thing to measure rather than one of several.
 
 ## Research order — evidence before patches
 
