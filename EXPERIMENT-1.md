@@ -103,6 +103,15 @@ this experiment cannot explain it. What it does is **remove non-determinism from
 candidates** — which leaves input context, and makes the dependency-closure measurement the next
 thing to do rather than one of several things.
 
+> **A CONCLUSION DRAWN FROM THIS AND THEN RETRACTED, kept because the error is instructive.**
+> This result was briefly used to argue that the 74.6 % of tiles changing over 16 days must be
+> real OSM change rather than index churn. **It proves no such thing.** Determinism is *same
+> input, same output*; the 16-day figure compared **different** inputs. Between the two sits a
+> third possibility — a small real edit that shifts the ids of many unchanged objects — which is
+> precisely the *instability under changed input* this branch was opened to study, and which
+> nothing here excludes. Proving determinism and then reasoning about changed input is the same
+> conflation the branch exists to avoid, made within an hour of drawing the distinction.
+
 **Still open, and explicitly a hypothesis rather than a finding:** whether a deterministic builder
 means a rebuild's effects stop at the first ring of neighbours. That is the next experiment, not
 a conclusion from this one.
