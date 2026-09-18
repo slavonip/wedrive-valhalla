@@ -11,9 +11,9 @@
 #include <iostream>
 #include <string>
 
-#include "baldr/graphid.h"
-#include "baldr/graphreader.h"
-#include "baldr/graphtile.h"
+#include <valhalla/baldr/graphid.h>
+#include <valhalla/baldr/graphreader.h>
+#include <valhalla/baldr/graphtile.h>
 #include <boost/property_tree/ptree.hpp>
 
 using namespace valhalla::baldr;
@@ -49,6 +49,11 @@ int main(int argc, char** argv) {
   boost::property_tree::ptree conf;
   conf.put("mjolnir.tile_dir", md_dir); // region 0 falls back to this
   conf.put("mjolnir.max_cache_size", 512 * 1024 * 1024);
+  // FlatTileCache, the default, keys on level and tileid alone — `get_offset` never sees the
+  // region, so both regions' copies of a tile land on one slot and the second ask returns the
+  // first's bytes. SimpleTileCache keys on the whole GraphId value, region bits included.
+  // Set here to establish that the DESIGN is sound; the flat cache is fixed separately.
+  conf.put("mjolnir.use_simple_mem_cache", true);
 
   GraphReader reader(conf.get_child("mjolnir"));
   reader.AddRegion(1, md_dir);
