@@ -108,6 +108,42 @@ worst single tile 52 %
 change all of them, exactly as experiment 5 measured — and the patches still come to 1.81 %. The
 churn is real and almost entirely predictable from the previous version.
 
+### All six countries, every tile, every reconstruction checked
+
+```
+2827 tiles      byte-identical 0      patched and VERIFIED 2827      failed 0
+
+full graph              2 304 369 208 B   2197.6 MB
+changed tiles, zstd -19   798 943 490 B    761.9 MB   34.67 %
+BSDIFF PATCHES             11 584 685 B     11.0 MB    0.50 %
+
+worst single tile   2/000/764/033.gph at 54 %
+creating all patches      504.2 s   (server, single-threaded)
+APPLYING all patches       17.9 s   (what the car does)
+peak bspatch RSS           45 MB    on the largest tile, which is 21 MB
+```
+
+**0.50 % for the whole installed set, and the car's side costs 17.9 seconds and 45 MB.** The
+memory figure is the one that could have killed this: `bsdiff` needs roughly 17x the file size to
+CREATE a patch, but that is the server's problem — `bspatch` needed about twice the tile size,
+which a head unit has.
+
+> **Not one tile of 2827 was byte-identical**, while experiment 5's masked comparison found 1103
+> differing. The difference is the header: `dataset_id_` and `checksum_` move on any change to the
+> input, in every tile. So "send nothing for this tile" is never available — but 11 MB across 2827
+> tiles shows most of them differ by little more than those 13 bytes.
+
+## THE FIRST ATTEMPT AT THIS REPORTED 2827 OF 2827 FAILED, and it was the harness
+
+`bspatch` had been wrapped in `/usr/bin/time -f %M`, which the container does not have. The
+command died before writing its output, every `sha256sum` then had nothing to read, and the run
+printed a total failure. The patch SIZES from it were real; the verification had not happened.
+Peak memory is now read from `/proc/<pid>/status` instead.
+
+Worth keeping because the failure mode is the inverse of the usual one: a broken instrument
+reported a catastrophe rather than a success, which is the safe direction — but it is the same
+class of defect as measuring with a tool that is not there.
+
 ## What this settles
 
 **The `Zmin` question is moot.** Experiments 4 and 5 asked what must travel when generations are
@@ -120,11 +156,9 @@ throughout — and Europe is not re-downloaded.
 
 ## What is NOT settled
 
-* **The whole six-country figure**, which is the real monthly update rather than one country.
-* **What applying the patches costs on the car.** `bsdiff` needs roughly 17× the file size while
-  CREATING a patch, which is the server's problem and irrelevant; `bspatch` is cheaper, but a
-  16 MB tile on an ECARX head unit is not the same as on this machine, and no measurement of it
-  exists.
+* **What applying the patches costs on the CAR's OWN hardware.** 17.9 s and 45 MB were measured
+  on this machine, which is not an ECARX head unit. The figures are small enough that an order of
+  magnitude either way would not change the conclusion, but they are not measurements of the car.
 * **Whether a month behaves like a fortnight.** One interval was measured. A车 that skips three
   months compares against a much older base, and delta size against a distant ancestor is not
   established.
