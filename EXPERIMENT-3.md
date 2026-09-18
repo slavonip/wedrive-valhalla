@@ -150,10 +150,12 @@ Nothing here requires a change to the `.gph` format, to GraphId, or to the runti
   nearly all of it, so "bounded by the level-0 cell" is very nearly "bounded by the country". The
   number that matters is closure bytes against the size of the country being updated, measured on
   a graph where a 4° cell is a small fraction. That is a Romania-scale or Europe-scale experiment.
-* Real OSM months contain thousands of edits, not one. Whether their closures stay disjoint or
-  saturate is unmeasured — and at 6 tiles per edit over 114 tiles, saturation on a country the
-  size of Moldova looks likely, which would explain the 74.6 % figure without any of it being
-  real change.
+* **The 74.6 % is NOT explained, only made explicable.** What these mutations establish is a
+  MECHANISM capable of enormous amplification — one street moving 1 594 unrelated ways, one edit
+  reaching 6 tiles of 114. What they do not do is DECOMPOSE the real 16-day diff into real OSM
+  change and induced churn. Saying "the 74.6 % is explained entirely" was the same overreach as
+  after experiment 1, one step further along: proving a mechanism exists is not measuring its
+  share. The decomposition needs two real snapshots, counted tile by tile.
 * Shortcut edges were not isolated. None of these mutations touched a road class that carries
   shortcuts, so the question of whether a shortcut can depend on topology outside its own tile
   remains open.
