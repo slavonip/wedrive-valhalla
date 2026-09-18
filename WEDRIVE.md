@@ -88,8 +88,12 @@ Three consequences:
   `deterministic_edge_indexes` option, yet the output is stable — because `Edge::operator<` falls
   through to `llindex_`, which is unique per edge. (It does tie for two distinct *self-loop* edges
   at one node, which is a plausible route to the behaviour the issue reports on other data.)
-* **The 74.6 % of tiles changing in 16 days is real OSM change, not index churn.** A delta is
-  therefore genuinely expensive, and that measurement stands as it was.
+* **The 74.6 % of tiles changing in 16 days is STILL UNEXPLAINED.** An earlier version of this
+  line concluded it must be real OSM change rather than index churn. That does not follow, and
+  the error is the exact conflation this branch exists to avoid: determinism is *same input, same
+  output*, while the 16-day measurement compared **different** inputs. A small real edit that
+  churns the ids of unchanged objects sits between the two and is excluded by nothing measured so
+  far. Experiment 2 is what settles it.
 * **Non-determinism is off the list of explanations for 31/0.** What remains is input context —
   which makes the dependency closure the next thing to measure rather than one of several.
 
