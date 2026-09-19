@@ -30,6 +30,7 @@ else:
         "    if (seen < 6) {\n"
         "      std::cerr << \"WEDRIVE REGION LOST #\" << seen << \": level=\" << graphid.level()\n"
         "                << \" tileid=\" << graphid.tileid() << \" id=\" << graphid.id() << std::endl;\n"
+        "#if !defined(__ANDROID__) // WEDRIVE backtrace: execinfo нет в Bionic\n"
         "      // WEDRIVE backtrace: без стека поиск оставшихся мест — перебор по одному за раз.\n"
         "      void* frames[24];\n"
         "      const int nf = ::backtrace(frames, 24);\n"
@@ -40,13 +41,14 @@ else:
         "        }\n"
         "        ::free(syms);\n"
         "      }\n"
+        "#endif // WEDRIVE backtrace\n"
         "    }"
     )
     s = s.replace(old, new)
     # Include ставим перед самым первым, каким бы он ни был: путь к graphreader.h в этом файле
     # может быть записан иначе, и угадывать его незачем.
     first = s.index("#include")
-    s = s[:first] + "#include <execinfo.h> // WEDRIVE backtrace\n" + s[first:]
+    s = s[:first] + "#if !defined(__ANDROID__) // WEDRIVE backtrace\n#include <execinfo.h>\n#endif\n" + s[first:]
     io.open(P, "w", encoding="utf-8").write(s)
     print("      +    WEDRIVE backtrace в детекторе")
 
