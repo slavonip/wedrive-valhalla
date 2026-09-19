@@ -60,7 +60,12 @@ jobs:
         id: ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r26d
+          # r29, а не r26: Valhalla зовёт std::format_string в midgard/logging.h БЕЗ единой
+          # проверки доступности, а в libc++ у r26 его ещё нет — сборка падает шестью
+          # ошибками в первом же файле midgard. Версия взята не наугад: ровно на r29
+          # собирает Valhalla под Android проект Rallista/valhalla-mobile, чей AAR это
+          # приложение использует сегодня.
+          ndk-version: r29
 
       - name: vcpkg
         run: |
