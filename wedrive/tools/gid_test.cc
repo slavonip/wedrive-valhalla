@@ -43,7 +43,7 @@ int main() {
   check("set_id(11) сохраняет region", a.region() == kRegion && a.id() == 11);
   check("set_id(11) не трогает tileid/level", a.tileid() == kTile && a.level() == kLevel);
 
-  const GraphId b = tagged + 1;
+  const GraphId b = tagged + uint64_t(1);
   check("operator+(1) сохраняет region", b.region() == kRegion && b.id() == kId + 1);
 
   GraphId c = tagged;
@@ -73,7 +73,7 @@ int main() {
   check("set_id идентичен stock-конструкции", p1.value == s1.value);
 
   check("operator+ идентичен stock-конструкции",
-        (plain + 1).value == GraphId(kTile, kLevel, kId + 1).value);
+        (plain + uint64_t(1)).value == GraphId(kTile, kLevel, kId + 1).value);
 
   GraphId p2 = plain;
   ++p2;
