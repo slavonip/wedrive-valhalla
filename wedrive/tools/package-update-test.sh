@@ -92,5 +92,20 @@ for i in "${!NAMES[@]}"; do
 done
 
 echo
+echo "=== 6. возвращаем стенд как было"
+# Тест обязан быть неразрушающим. Оставленная подменённой страна — это графы РАЗНЫХ дат в
+# общем стенде, и следующая проверка спишет разницу данных на код: именно так service-regress
+# однажды показал четыре ложных расхождения, включая маршрут целиком внутри Румынии.
+docker exec vhdev bash -c "rm -rf /regions/$COUNTRY && mv /regions/${COUNTRY}_prev /regions/$COUNTRY"
+bash "$(dirname "${BASH_SOURCE[0]}")/regen-portals.sh" >/dev/null 2>&1
+sums > /tmp/sums_restored.txt
+if diff -q /tmp/sums_before.txt /tmp/sums_restored.txt >/dev/null; then
+  note "контрольные суммы вернулись к исходным" "OK"
+else
+  note "стенд НЕ восстановлен" "ПРОВАЛ"
+  diff /tmp/sums_before.txt /tmp/sums_restored.txt | sed 's/^/   /'
+fi
+
+echo
 [ $fail -eq 0 ] && echo "ОБНОВЛЕНИЕ ОДНОЙ СТРАНЫ ПРОШЛО" || echo "ЕСТЬ ПРОВАЛЫ"
 exit $fail
