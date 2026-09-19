@@ -110,25 +110,57 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             2>&1 | tail -60
 
+      # ФОРМА TLS У ЗАВИСИМОСТЕЙ — проверка на секунду, которая иначе стоит целого прогона.
+      #
+      # Clang ниже API 29 кладёт `__thread`-переменную как `__emutls_v.<имя>`, выше — как
+      # настоящий TLS с прямым именем. Если vcpkg собрал зависимости на одном уровне, а дерево
+      # собирается на другом, линковка падает на ЕДИНСТВЕННОМ символе thread_cache_ protobuf, и
+      # выглядит это как поломка protobuf. Здесь это называется своим именем сразу.
+      - name: TLS зависимостей
+        run: |
+          NM="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          LIB=$(find "build/${{ matrix.abi }}/vcpkg_installed" -name 'libprotobuf.a' | head -1)
+          [ -n "$LIB" ] || { echo "!! libprotobuf.a не найдена"; exit 1; }
+          echo "   $LIB"
+          syms=$("$NM" --defined-only "$LIB" 2>/dev/null || true)
+          direct=$(printf '%s\n' "$syms" | grep -c 'ThreadSafeArena12thread_cache_' || true)
+          emu=$(printf '%s\n' "$syms" | grep -c '__emutls_v.*thread_cache_' || true)
+          echo "   прямой TLS: $direct, эмулированный: $emu"
+          if [ "$emu" != "0" ]; then
+            echo "!! зависимости собраны с ЭМУЛИРОВАННЫМ TLS: их уровень API ниже 29."
+            echo "!! ANDROID_PLATFORM задаётся в android/triplets/*.cmake, не только в конфигурации."
+            exit 1
+          fi
+          [ "$direct" != "0" ] || { echo "!! thread_cache_ не определён вовсе"; exit 1; }
+
       - name: сборка
         run: cmake --build "build/${{ matrix.abi }}" -j"$(nproc)" 2>&1 | tail -80
 
       # Библиотека обязана отвечать, ЧТО в ней собрано: патченый движок снаружи неотличим от
       # стокового до первого маршрута через границу, и приложение, положившее не тот .so, узнает
       # об этом в машине.
+      #
+      # Проверка УТВЕРЖДАЕТ, а не сообщает. Прежняя версия писала «НЕТ НАШИХ СИМВОЛОВ» и
+      # завершалась успехом — то есть пустая библиотека уехала бы артефактом, и отказ вскрылся бы
+      # на устройстве, где причина уже не видна.
       - name: что внутри .so
         run: |
+          NM="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           SO=$(find "build/${{ matrix.abi }}" -name 'libwedrive_valhalla.so' | head -1)
-          [ -n "$SO" ] || { echo "библиотека не собралась"; exit 1; }
+          [ -n "$SO" ] || { echo "!! библиотека не собралась"; exit 1; }
           ls -la "$SO"
-          echo "--- ABI:"
           file "$SO" || true
-          echo "--- наши символы:"
-          "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
-            -D --defined-only "$SO" | grep wedrive_ || echo "  НЕТ НАШИХ СИМВОЛОВ"
-          echo "--- символы движка (должны быть, иначе .so пустой):"
-          "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
-            -D --defined-only "$SO" | grep -c valhalla || true
+          syms=$("$NM" -D --defined-only "$SO" || true)
+          ours=$(printf '%s\n' "$syms" | grep -c 'wedrive_' || true)
+          jni=$(printf '%s\n' "$syms" | grep -c 'Java_com_wedrive_data_NativeValhalla' || true)
+          eng=$(printf '%s\n' "$syms" | grep -c 'valhalla' || true)
+          echo "   наших символов: $ours, точек JNI: $jni, символов движка: $eng"
+          printf '%s\n' "$syms" | grep 'wedrive_max_regions\|wedrive_self_test' | sed 's/^/     /' || true
+          [ "$ours" -gt 0 ] || { echo "!! в библиотеке нет наших символов"; exit 1; }
+          # Семь внешних методов NativeValhalla.kt — меньше значит, что часть не экспортирована и
+          # приложение упадёт на UnsatisfiedLinkError уже после загрузки библиотеки.
+          [ "$jni" -ge 7 ] || { echo "!! точек JNI $jni, ожидалось 7"; exit 1; }
+          [ "$eng" -gt 100 ] || { echo "!! символов движка $eng — библиотека пустая"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
