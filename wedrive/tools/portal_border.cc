@@ -118,24 +118,30 @@ std::unordered_map<uint64_t, Cand> BorderNodes(GraphReader& reader,
 int main(int argc, char** argv) {
   if (argc < 8) {
     std::cerr << "usage: " << argv[0]
-              << " <dirA> <dirB> <minlat> <minlon> <maxlat> <maxlon> <level>\n";
+              << " <dirA> <dirB> <minlat> <minlon> <maxlat> <maxlon> <level>"
+              << " [regionA=1] [regionB=2]\n";
     return 2;
   }
   const std::string dira = argv[1], dirb = argv[2];
   const double minlat = std::stod(argv[3]), minlon = std::stod(argv[4]);
   const double maxlat = std::stod(argv[5]), maxlon = std::stod(argv[6]);
   const uint8_t level = static_cast<uint8_t>(std::stoi(argv[7]));
+  // Номера регионов — у каждой границы свои. MD=1, RO=2, HU=3: таблица RO-HU
+  // строится с парой 2 и 3, и зашитые 1/2 пометили бы венгерские узлы чужим
+  // namespace.
+  const uint32_t region_a = (argc > 8) ? std::stoul(argv[8]) : 1u;
+  const uint32_t region_b = (argc > 9) ? std::stoul(argv[9]) : 2u;
 
   boost::property_tree::ptree conf;
   conf.put("mjolnir.tile_dir", dira);
   conf.put("mjolnir.max_cache_size", 3ull * 1024 * 1024 * 1024);
   GraphReader reader(conf.get_child("mjolnir"));
-  reader.AddRegion(1, dira);
-  reader.AddRegion(2, dirb);
+  reader.AddRegion(region_a, dira);
+  reader.AddRegion(region_b, dirb);
 
   size_t ea = 0, eb = 0;
-  const auto a = BorderNodes(reader, 1, level, minlat, minlon, maxlat, maxlon, &ea);
-  const auto b = BorderNodes(reader, 2, level, minlat, minlon, maxlat, maxlon, &eb);
+  const auto a = BorderNodes(reader, region_a, level, minlat, minlon, maxlat, maxlon, &ea);
+  const auto b = BorderNodes(reader, region_b, level, minlat, minlon, maxlat, maxlon, &eb);
 
   size_t pairs = 0;
   for (const auto& [k, ca] : a) {
@@ -151,7 +157,8 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(ca.node.value), ca.ll.lat(), ca.ll.lng());
     ++pairs;
   }
-  std::cerr << "# level " << int(level) << "   пограничных узлов: A " << a.size() << "  B "
+  std::cerr << "# level " << int(level) << "  регионы " << region_a << "/" << region_b
+            << "   пограничных узлов: A " << a.size() << "  B "
             << b.size() << "   парных порталов " << pairs << "\n";
   return 0;
 }

@@ -329,6 +329,93 @@ absent precisely where it is needed.
 > more informative than the test itself. Sorting is on the **file name** now, and step 2 of the
 > verifier checks the exit code and the count of failed patches instead of grepping for one word.
 
+## Three countries, and updating one of them
+
+The point of the whole exercise, stated as a test: build MD and RO, add HU separately, route across
+both borders, then rebuild **only RO** from a newer OSM extract and route again without touching
+MD or HU.
+
+Vintages are genuinely different, which is what makes the last step mean anything:
+
+| extract | OSM date |
+|---|---|
+| moldova | 2026-09-16 |
+| romania (before) | 2026-09-01 |
+| romania (after) | 2026-09-18 |
+| hungary | 2026-09-18 |
+
+Each country is built alone — its own admin database, its own tiles, nothing shared. Two borders,
+each with its own pair of region ids: MD=1, RO=2, HU=3, 290 portal rows.
+
+> **`portal_border` took its region ids from nowhere — they were hard-coded 1 and 2.** Fine for two
+> countries, wrong the moment there is a second border: the RO-HU table needs 2 and 3, and the
+> hard-coded pair would have stamped Hungarian nodes with Romania's namespace. They are arguments
+> now, defaulting to 1 and 2 so existing calls are unchanged.
+
+### Across three graphs, against a three-country monolith
+
+| route | monolith | composite |
+|---|---|---|
+| Chisinau -> Budapest | 1040.868 | 1040.913 |
+| Bucharest -> Budapest | 842.788 | 842.792 |
+| Iasi -> Debrecen | 667.541 | 667.549 |
+| Chisinau -> Bucharest | 456.458 | 456.448 |
+
+45 m over 1041 km. Chisinau -> Budapest crosses **two** borders and reports exactly **two** region
+seams — 1->2 at edge 583 and 2->3 at edge 1456 of 2049 — with zero region loss. One physical
+frontier, one namespace change.
+
+### Updating one country
+
+Romania's tiles were replaced with the 2026-09-18 build and the portal tables of **its two borders**
+regenerated. Nothing else was touched, and the checksums prove it: `moldova_bc` and `hungary_bc`
+byte-identical before and after, `romania_bc` changed.
+
+All seven routes came back **identical to the millimetre**, including the ones that run through
+Romania. That is the result, and it needed a control before it meant anything — an accidentally
+identical rebuild would produce the same table:
+
+| | |
+|---|---|
+| tiles differing byte-for-byte | **636 of 636** |
+| portal id pairs that changed | **20 of 32** |
+
+So the graph really was rebuilt, the ids really did move, and routing was unaffected because the
+portal table was regenerated with them.
+
+> **What has to be regenerated is exactly: the country's tiles, and the portal tables of its
+> borders.** Neighbouring *graphs* are never rebuilt. That is the whole asymmetry the architecture
+> buys, and it is why a portal is an external row rather than an edge inside a `.gph`.
+
+### Forgetting the portal table fails loudly, not silently
+
+The negative test: fresh Romanian tiles against the **stale** MD-RO table — a pipeline that updated
+a country and forgot its borders.
+
+```
+WEDRIVE: регионов 3, порталов 270, отвергнуто 20
+```
+
+Exactly the 20 pairs whose ids moved, rejected by `AddPortal`'s validation; the route still came out
+right on the surviving twelve, with no crash and no region loss. Stale portals are a counter, not a
+corruption — which is what patch 21 was written for, now demonstrated on a real update rather than
+on a hand-made bad table.
+
+`tools/package-update-test.sh` runs this sequence against already-built packages, and
+`tools/regen-portals.sh` is the border table as data: pairs of directories, pairs of region ids and
+search boxes, in one place.
+
+### The ceiling that now matters
+
+`EdgeLabel::region_` is **3 bits — seven usable regions** (0 means untagged). MD+RO+HU uses three;
+Austria would be four. `GraphId` itself has eighteen spare bits and is not the constraint — the
+label is, and it is full: `EdgeLabel` is 40 bytes and `BDEdgeLabel` exactly 64, one cache line, both
+unchanged by everything above.
+
+Seven is enough for the countries this car actually drives through and **not** enough for a European
+deployment. Widening it is the next structural piece, and it is a question about `BDEdgeLabel`'s
+cache line rather than about routing.
+
 ## Next
 
 1. Teach Thor's bidirectional A* the same re-tagging rule and the portal expansion.
