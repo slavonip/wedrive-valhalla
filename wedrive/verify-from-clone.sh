@@ -71,10 +71,16 @@ echo "=== 3b. патчи ложатся на дерево по ДРУГОМУ п
 # и без второй копии истории.
 docker exec vhdev bash -c "cd $SRC && git worktree remove --force /tmp/otherpath 2>/dev/null; rm -rf /tmp/otherpath; git worktree add --detach -f /tmp/otherpath HEAD >/dev/null 2>&1 && bash /tmp/wedrive-verify/apply-patches.sh /tmp/otherpath" > /tmp/otherpath.log 2>&1
 rc=$?
-bad=$(grep -c '!!' /tmp/otherpath.log 2>/dev/null || echo 0)
+# `grep -c` при НУЛЕ совпадений печатает 0 и выходит с кодом 1, поэтому `|| echo 0` дописывает
+# ВТОРУЮ строку: переменная становится "0\n0" и не равна нулю ни по одному сравнению. Проверка
+# тогда проваливает шаг, который прошёл — ровно это и случилось при первом же прогоне.
+bad=$(grep -c '!!' /tmp/otherpath.log 2>/dev/null || true)
 note "apply-patches.sh на чужом пути (код $rc, упавших $bad)" \
      "$([ "$rc" = 0 ] && [ "$bad" = 0 ] && echo OK || echo ПРОВАЛ)"
 [ "$bad" != 0 ] && grep '!!' /tmp/otherpath.log | head -5 | sed 's/^/      /'
+# Worktree снимаем с учёта: иначе он остаётся зарегистрированным в /src/valhalla и следующий
+# прогон начинается с чужого мусора в дереве, которое обязано быть стоковым.
+docker exec vhdev bash -c "cd $SRC && git worktree remove --force /tmp/otherpath" >/dev/null 2>&1 || true
 echo
 echo "=== 4. сборка"
 errs=$(docker exec vhdev bash -c "make -C $SRC/build -j\$(nproc) 2>&1 | grep -cE 'error:'")
