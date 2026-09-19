@@ -265,6 +265,70 @@ and 87 manoeuvres either way), which rules out the build config and leaves the o
 that it is confined to the border; a probe at one point on M1 found no duplicate edges, so the
 exact mechanism is still open. Recorded as a lead, not a result.
 
+## Matrix and isochrones — the same defect, twice more
+
+Both remaining services turned out to be the same class: an independent graph traversal that knew
+nothing of portals, plus a namespace dropped somewhere along the way. Valhalla has **four** of
+these, and that is the whole reason one route test was never enough:
+
+| service | its own traversal |
+|---|---|
+| route / timed route | `thor/bidirectional_astar.cc`, `unidirectional_astar.cc` |
+| `sources_to_targets` | `thor/costmatrix.cc` |
+| `isochrone` | `thor/dijkstras.cc` |
+| `trace_route` | `meili/routing.cc`, plus its own candidate search |
+
+**The matrix** returned 111.578 km for Chisinau -> Iasi against the monolith's 150.1, snapping the
+target onto a Moldovan road. The detector named the cause: `loki_worker_t::matrix` had its own
+`search_.search` — the third after route and trace. Rather than write the multiplex a third time,
+it moved into `valhalla/loki/search.h` as `WeDriveCorrelate` and **all six** call sites now use it.
+
+Inside `costmatrix.cc` the fix was a region tag on the level transition plus portal expansion — and
+then a crash: `NodeInfo index out of bounds: 3111,0,23826 nodecount=3330`. The `get_opp_edge_data`
+lambda picked a tile from a raw `endnode()` and then read the opposing edge out of the *wrong
+region's* tile. Tile 3111 exists in both regions with different node counts, which is exactly what
+an out-of-range index looks like.
+
+**Isochrones** needed the same three things in `Dijkstras`, and repeated the lesson of patch 53:
+portals live at level 0 (14 pairs) and level 2 (2 pairs), and level 0 is reachable *only* through a
+`NodeTransition`. Gating the portal block on `from_transition` would have hidden all fourteen pairs
+again. Two prohibitions, two flags.
+
+Then the contour was still clipped at the Prut, and the detector pointed at
+`loki_worker_t::isochrones` — a **fourth** separate call. At that point hunting them one at a time
+stopped making sense: all six were enumerated at once and the remaining three converted
+(`isochrone_action`, `locate_action`, and `exclude_locations` in `worker.cc`). The patch verifies
+this by **listing the directory**, not by a list I could forget to update.
+
+### Acceptance, monolith vs composite, tolerance 0.1 km per cell
+
+| | monolith | composite |
+|---|---|---|
+| nine routes | — | max divergence **0.064 km** |
+| timed route | 456.458 | 456.458 |
+| matrix 2x2 across the border | 153.397 | 153.447 *(was 111.578 vs 150.1)* |
+| isochrone 45 min from the border | span 0.724 | 0.724 *(was 0.516 — clipped at the Prut)* |
+| isochrone 60 min from Chisinau | 1.369 | 1.369 |
+| trace, 770 GPS points | 150.059 | 150.064 |
+| **region lost** | — | **0** |
+
+`tools/service-regress.sh` is that table as a repo tool. It builds its own 770-point trace from the
+monolith's geometry, because otherwise a fresh clone would silently *skip* the matching check —
+absent precisely where it is needed.
+
+> **The clean-clone run failed, and it was right to.** `apply-patches.sh` ordered patches with
+> `sort -t- -k2 -n` over the **full path**. The verifier copies itself to `/tmp/wedrive-verify`, so
+> field 2 became `verify/patch` rather than a number; the numeric key degenerated, sort fell back to
+> lexicographic, and **`patch-10` ran before `patch-9`**. Patches 10, 14, 19 and 21 then failed on
+> the first pass and were only picked up by the second, so the tree converged after two runs and
+> everything downstream looked healthy — the verifier applies twice before building. A fresh clone
+> applying patches **once** got a tree missing four patches.
+>
+> My own harness never caught it because it copied to `/tmp/wd`, where there is no hyphen and the
+> order happened to be right. That is the third time this session a difference between harnesses was
+> more informative than the test itself. Sorting is on the **file name** now, and step 2 of the
+> verifier checks the exit code and the count of failed patches instead of grepping for one word.
+
 ## Next
 
 1. Teach Thor's bidirectional A* the same re-tagging rule and the portal expansion.
