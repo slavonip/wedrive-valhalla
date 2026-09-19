@@ -416,6 +416,66 @@ Seven is enough for the countries this car actually drives through and **not** e
 deployment. Widening it is the next structural piece, and it is a question about `BDEdgeLabel`'s
 cache line rather than about routing.
 
+## Widening region to 8 bits — 255 regions, and the map format untouched
+
+Seven countries were enough for research and are not enough for Europe. `GraphId` was never the
+constraint: it carries the region in bits 46..63 and already allowed eighteen. The constraint was
+the search label, packed without a single free bit, and five had to be found in it.
+
+**The obvious candidate was wrong, and only a measurement showed it.** `opp_local_idx_` is 7 bits
+with `kMaxLocalEdgeIndex = 7` declared right beside it, so three bits looked sufficient.
+`tools/field_range.cc` walked every edge of every tileset: the constant bounds a node's *heading
+array*, not the field, and **48 edges in the MD+RO+HU monolith hold values up to 12**. Narrowing it
+would have silently corrupted them.
+
+The five bits came from where the bound is provable:
+
+| field | before | after | why it is safe |
+|---|---|---|---|
+| `predecessor_` | 32 | **28** | 268 435 455 labels. At 64 bytes a label that is 17 GB of labels alone — a physical ceiling, not an estimate |
+| `mode_` | 4 | **3** | `TravelMode` has five values; a `static_assert` holds it, not a comment |
+
+`kInvalidLabel` occupies all 32 bits, so inside the label it is stored as its own 28-bit marker and
+the accessor hands the original constant back out — the global constant is untouched and every
+`== kInvalidLabel` outside the label still reads true. Five single-bit flags moved into the freed
+space, and the sizes are held by `static_assert` in the header itself: `EdgeLabel` 40 bytes,
+`BDEdgeLabel` exactly 64, one cache line.
+
+> **The guard earned its keep on the way through.** `AddRegion` had refused anything above 7 since
+> the prototype, and the first attempt to build a portal table with region 8 stopped with
+> *"region id 8 exceeds the 8 that EdgeLabel's 3 spare bits can carry"* instead of silently
+> truncating to 0 and sending the car into the wrong country. The cap moved with the field
+> (8 -> 256); the guard stayed.
+
+### Proven on the graph, not only in a unit test
+
+The same three countries were re-labelled **8, 9 and 10** — past the old ceiling. **No tiles were
+rebuilt**: only the config and the portal table changed, which is the point.
+
+| route | regions 1/2/3 | regions 8/9/10 |
+|---|---|---|
+| Chisinau -> Budapest | 1040.913 | 1040.913 |
+| Bucharest -> Budapest | 842.792 | 842.792 |
+| Iasi -> Debrecen | 667.549 | 667.549 |
+| Chisinau -> Bucharest | 456.448 | 456.448 |
+
+Seams: `8->9` at edge 583 and `9->10` at edge 1456 — the same edges as before, different numbers.
+Region lost 0, portals rejected 0.
+
+`gid_test` covers regions 8, 63, 200 and 255 through `GraphId` *and* through the label, the
+`kInvalidLabel` round-trip after the narrowing, the 2^28-2 boundary index, and both sizes. The
+label's fields are `protected`, so the test reaches them with a derived struct of its own rather
+than adding test hooks to a production header.
+
+> **A green suite hid a stand problem, and the tell was a route that cannot possibly be affected.**
+> `verify-from-clone` step 9 reported four divergences including **Iasi -> Bucharest, entirely
+> inside Romania** — a route no multi-region code can change. The cause was `package-update-test.sh`
+> leaving Romania swapped to the 2026-09-18 build, so the next run compared a composite on fresh
+> Romania against a monolith on the old one and charged the difference to the code. The test is
+> non-destructive now: it restores the previous build, regenerates the portal tables, and
+> **compares checksums against the ones it recorded at the start** — proving the restore rather
+> than promising it.
+
 ## Next
 
 1. Teach Thor's bidirectional A* the same re-tagging rule and the portal expansion.
