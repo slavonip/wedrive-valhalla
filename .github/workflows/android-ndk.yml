@@ -23,6 +23,13 @@ on:
 permissions:
   contents: read
 
+# pipefail, иначе `cmake ... | tail` отдаёт код ВЫХОДА tail, а не cmake: шаг рапортует
+# успехом поверх упавшей сборки. За эту сессию тот же класс ошибки сработал трижды —
+# grep -c при нуле совпадений, docker -e VAR="" и вот конвейер.
+defaults:
+  run:
+    shell: bash -eo pipefail {0}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -57,7 +64,10 @@ jobs:
 
       - name: vcpkg
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+          # БЕЗ --depth 1: vcpkg достаёт versions/baseline.json из ЗАФИКСИРОВАННОГО
+          # коммита через `git show`, и в поверхностном клоне этого коммита нет.
+          # Ошибка при этом выглядит как проблема с зависимостями, а не с клоном.
+          git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
           "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
 
