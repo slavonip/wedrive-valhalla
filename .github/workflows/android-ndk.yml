@@ -67,6 +67,21 @@ jobs:
           # приложение использует сегодня.
           ndk-version: r29
 
+      # ПАТЧИ НАКЛАДЫВАЮТСЯ ЗДЕСЬ, и без этого шага собирается СТОКОВАЯ Valhalla.
+      #
+      # В репозитории лежат исходники upstream плюс wedrive/patch-*.py: multi-region существует
+      # как набор патчей, применяемых при сборке, а не как изменённые файлы в истории. Образ
+      # движка для фабрики карт это делает, а здесь я забыл — и собиралась стоковая библиотека.
+      #
+      # Поймалось это не на маршруте в машине, а на компиляции: функции-отпечатки в
+      # wedrive_jni.cc зовут with_region и kWeDriveMaxRegions, которых у стоковой Valhalla нет.
+      # Ради этого они и написаны.
+      - name: патчи multi-region
+        run: |
+          bash wedrive/apply-patches.sh . | tail -25
+          echo "--- проверка, что легли:"
+          grep -c WEDRIVE valhalla/baldr/graphid.h valhalla/sif/edgelabel.h valhalla/baldr/graphreader.h
+
       - name: vcpkg
         run: |
           # БЕЗ --depth 1: vcpkg достаёт versions/baseline.json из ЗАФИКСИРОВАННОГО
