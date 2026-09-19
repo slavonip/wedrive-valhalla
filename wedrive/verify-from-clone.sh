@@ -39,8 +39,13 @@ echo
 echo "=== 2. патчи из репозитория"
 docker exec vhdev rm -rf /tmp/wedrive-verify
 docker cp "$HERE" vhdev:/tmp/wedrive-verify >/dev/null
+# Проверяется И код возврата, И маркеры. Раньше искалось только "MISSING", поэтому четыре
+# патча, падавшие с AssertionError на первом прогоне, проходили этот шаг зелёными: их
+# дотягивал второй прогон в шаге 3.
 docker exec vhdev bash -c "bash /tmp/wedrive-verify/apply-patches.sh $SRC" >/tmp/apply.log 2>&1
-note "apply-patches.sh" "$(grep -q 'MISSING' /tmp/apply.log && echo ПРОВАЛ || echo OK)"
+rc=$?
+broke=$(grep -c '!!' /tmp/apply.log || true)
+note "apply-patches.sh (код $rc, упавших патчей $broke)" \n  "$([ "$rc" = "0" ] && [ "$broke" = "0" ] && ! grep -q 'MISSING' /tmp/apply.log && echo OK || echo ПРОВАЛ)"
 
 echo
 echo "=== 3. идемпотентность: второй прогон ничего не меняет"
