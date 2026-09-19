@@ -1,0 +1,692 @@
+diff --git a/src/baldr/graphreader.cc b/src/baldr/graphreader.cc
+index c1efe58..09e98ca 100644
+--- a/src/baldr/graphreader.cc
++++ b/src/baldr/graphreader.cc
+@@ -1,3 +1,4 @@
++#include <execinfo.h> // WEDRIVE backtrace
+ #include "baldr/graphreader.h"
+ #include "baldr/curl_tilegetter.h"
+ #include "incident_singleton.h"
+@@ -216,6 +217,11 @@ void FlatTileCache::Reserve(size_t tile_size) {
+ 
+ // Checks if tile exists in the cache.
+ bool FlatTileCache::Contains(const GraphId& graphid) const {
++  // WEDRIVE Contains: a tagged tile lives in the region map, not the flat array — its slot there
++  // would be shared with every other region's copy of the same cell.
++  if (graphid.region() != 0) {
++    return wedrive_region_cache_.find(graphid.value) != wedrive_region_cache_.end();
++  }
+   return is_valid(get_index(graphid));
+ }
+ 
+@@ -226,6 +232,8 @@ bool FlatTileCache::OverCommitted() const {
+ 
+ // Clears the cache.
+ void FlatTileCache::Clear() {
++  // WEDRIVE: the region map is part of this cache and is emptied with it.
++  wedrive_region_cache_.clear();
+   cache_size_ = 0;
+   cache_.clear();
+   // TODO: this could be optimized by using the remaining bits in tileid. we need to track a 7bit
+@@ -238,6 +246,12 @@ void FlatTileCache::Clear() {
+ 
+ // Get a pointer to a graph tile object given a GraphId.
+ graph_tile_ptr FlatTileCache::Get(const GraphId& graphid) const {
++  // WEDRIVE: a tagged tile is not in the flat array — its slot would collide with every other
++  // region's copy of the same cell.
++  if (graphid.region() != 0) {
++    auto found = wedrive_region_cache_.find(graphid.value);
++    return found == wedrive_region_cache_.end() ? nullptr : found->second;
++  }
+   auto index = get_index(graphid);
+   if (is_invalid(index))
+     return nullptr;
+@@ -246,6 +260,11 @@ graph_tile_ptr FlatTileCache::Get(const GraphId& graphid) const {
+ 
+ // Puts a copy of a tile of into the cache.
+ graph_tile_ptr FlatTileCache::Put(const GraphId& graphid, graph_tile_ptr tile, size_t size) {
++  // WEDRIVE: see Get.
++  if (graphid.region() != 0) {
++    cache_size_ += size;
++    return wedrive_region_cache_.emplace(graphid.value, std::move(tile)).first->second;
++  }
+   // TODO: protect against crazy tileid?
+   cache_size_ += size;
+   cache_indices_[get_offset(graphid)] = cache_.size();
+@@ -612,6 +631,29 @@ graph_tile_ptr GraphReader::GetGraphTile(const GraphId& graphid) {
+     return nullptr;
+   }
+ 
++  // WEDRIVE region lost detector. Если зарегистрировано больше одного региона, то
++  // id без региона означает, что где-то по дороге тег потерян — и тайл сейчас будет
++  // взят из ЧУЖОГО каталога. Это ровно та тихая ошибка, ради которой детектор и
++  // существует: он превращает «машина уехала в соседнюю страну» в счётчик, который
++  // тест обязан увидеть нулевым, и заодно сам показывает пропущенные call sites.
++  if (wedrive_region_dirs_.size() > 1 && graphid.region() == 0) {
++    const uint64_t seen = wedrive_region_lost_.fetch_add(1, std::memory_order_relaxed);
++    if (seen < 6) {
++      std::cerr << "WEDRIVE REGION LOST #" << seen << ": level=" << graphid.level()
++                << " tileid=" << graphid.tileid() << " id=" << graphid.id() << std::endl;
++      // WEDRIVE backtrace: без стека поиск оставшихся мест — перебор по одному за раз.
++      void* frames[24];
++      const int nf = ::backtrace(frames, 24);
++      char** syms = ::backtrace_symbols(frames, nf);
++      if (syms) {
++        for (int i = 1; i < nf && i < 14; ++i) {
++          std::cerr << "      " << syms[i] << std::endl;
++        }
++        ::free(syms);
++      }
++    }
++  }
++
+   // Check if the level/tileid combination is in the cache
+   auto base = graphid.tile_base();
+   if (const auto& cached = cache_->Get(base)) {
+@@ -655,7 +697,10 @@ graph_tile_ptr GraphReader::GetGraphTile(const GraphId& graphid) {
+           : nullptr;
+ 
+   // Try to get it from tile_dir and if we cant, try URL
+-  graph_tile_ptr tile = GraphTile::Create(tile_dir_, base, std::move(traffic_memory));
++  // WEDRIVE: pick the directory by the region carried in the id's spare bits. With no region
++  // registered this is tile_dir_ and the line behaves exactly as it did.
++  graph_tile_ptr tile =
++      GraphTile::Create(TileDirForRegion(base.region()), base, std::move(traffic_memory));
+   if (!tile || !tile->header()) {
+     if (!tile_getter_) {
+       return nullptr;
+@@ -711,8 +756,9 @@ GraphId GraphReader::GetOpposingEdgeId(const GraphId& edgeid, graph_tile_ptr& op
+     return {};
+   };
+ 
+-  // If edge leaves the tile get the end node's tile
+-  GraphId id = directededge->endnode();
++  // WEDRIVE opposing keeps region: endnode прочитан из байтов тайла и региона не
++  // содержит — его надо восстановить из id ребра, иначе уедем в чужой регион.
++  GraphId id = directededge->endnode().with_region(edgeid.region());
+   if (!GetGraphTile(id, opp_tile)) {
+     return {};
+   };
+@@ -871,7 +917,9 @@ GraphId GraphReader::GetShortcut(const GraphId& id) {
+     }
+ 
+     // Get the end node and end node tile
+-    GraphId endnode = cont_de->endnode();
++    // WEDRIVE shortcut keeps region: шорткаты живут на уровнях 0/1, и переход по
++    // продолжающему ребру уводил в тайл соседнего региона с тем же именем файла.
++    GraphId endnode = cont_de->endnode().with_region(id.region());
+     if (cont_de->leaves_tile()) {
+       tile = GetGraphTile(endnode.tile_base());
+     }
+@@ -879,7 +927,8 @@ GraphId GraphReader::GetShortcut(const GraphId& id) {
+ 
+     // Get the opposing edge Id and its directed edge
+     uint32_t idx = node->edge_index() + cont_de->opp_index();
+-    edgeid = {endnode.tileid(), endnode.level(), idx};
++    // WEDRIVE shortcut edgeid keeps region: конструктор из компонентов региона не несёт.
++    edgeid = GraphId(endnode.tileid(), endnode.level(), idx).with_region(endnode.region());
+     directededge = tile->directededge(edgeid);
+ 
+     // If this edge is itself not the beginning of a shortcut, but we encountered another shortcut
+@@ -893,7 +942,8 @@ GraphId GraphReader::GetShortcut(const GraphId& id) {
+     if (directededge->superseded()) {
+       // Get the shortcut edge Id that supersedes this edge
+       uint32_t idx = node->edge_index() + directededge->superseded_idx() - 1;
+-      return GraphId(endnode.tileid(), endnode.level(), idx);
++      // WEDRIVE shortcut result keeps region.
++      return GraphId(endnode.tileid(), endnode.level(), idx).with_region(endnode.region());
+     }
+   }
+   return {};
+@@ -910,7 +960,8 @@ uint32_t GraphReader::GetEdgeDensity(const GraphId& edgeid) {
+   // Get the end node of the opposing directed edge
+   const DirectedEdge* opp_edge = GetOpposingEdge(edgeid);
+   if (opp_edge) {
+-    GraphId id = opp_edge->endnode();
++    // WEDRIVE density keeps region.
++    GraphId id = opp_edge->endnode().with_region(edgeid.region());
+     graph_tile_ptr tile = GetGraphTile(id);
+     return (tile != nullptr) ? tile->node(id)->density() : 0;
+   } else {
+@@ -921,7 +972,10 @@ uint32_t GraphReader::GetEdgeDensity(const GraphId& edgeid) {
+ // Get the end nodes of a directed edge.
+ std::pair<GraphId, GraphId> GraphReader::GetDirectedEdgeNodes(graph_tile_ptr tile,
+                                                               const DirectedEdge* edge) {
+-  GraphId end_node = edge->endnode();
++  // WEDRIVE edge nodes keep region: tile ниже уходит в std::move, поэтому регион
++  // снимаем с него сейчас.
++  const uint32_t wedrive_region = tile ? tile->id().region() : 0;
++  GraphId end_node = edge->endnode().with_region(wedrive_region);
+   GraphId start_node;
+   graph_tile_ptr t2 = (edge->leaves_tile()) ? GetGraphTile(end_node) : std::move(tile);
+   if (t2 != nullptr) {
+diff --git a/src/baldr/graphtile.cc b/src/baldr/graphtile.cc
+index 41f5050..28b4337 100644
+--- a/src/baldr/graphtile.cc
++++ b/src/baldr/graphtile.cc
+@@ -159,6 +159,8 @@ GraphTile::GraphTile(const GraphId& graphid,
+                      std::unique_ptr<const GraphMemory> memory,
+                      std::unique_ptr<const GraphMemory> traffic_memory)
+     : header_(nullptr), traffic_tile(std::move(traffic_memory)) {
++  // WEDRIVE: remember the region the caller asked for, before anything else touches graphid.
++  wedrive_region_ = graphid.region();
+   // Initialize the internal tile data structures using a pointer to the
+   // tile and the tile size
+   memory_ = std::move(memory);
+diff --git a/src/thor/bidirectional_astar.cc b/src/thor/bidirectional_astar.cc
+index 836c25c..69013c7 100644
+--- a/src/thor/bidirectional_astar.cc
++++ b/src/thor/bidirectional_astar.cc
+@@ -185,7 +185,12 @@ inline bool BidirectionalAStar::ExpandInner(baldr::GraphReader& graphreader,
+   baldr::GraphId opp_edge_id;
+   const auto get_opp_edge_data = [&t2, &opp_edge_id, &graphreader, &meta, &tile]() {
+     // Get end node tile, opposing edge Id, and opposing directed edge.
+-    t2 = meta.edge->leaves_tile() ? graphreader.GetGraphTile(meta.edge->endnode()) : tile;
++    // WEDRIVE leaves_tile keeps region: endnode прочитан из байтов тайла, регион
++    // берём у самого ребра — обычное ребро namespace не меняет.
++    t2 = meta.edge->leaves_tile()
++             ? graphreader.GetGraphTile(
++                   meta.edge->endnode().with_region(meta.edge_id.region()))
++             : tile;
+     if (t2 == nullptr) {
+       return false;
+     }
+@@ -464,18 +469,21 @@ void BidirectionalAStar::Expand(baldr::GraphReader& graphreader,
+       // if this is a downward transition (ups are always allowed) AND we are no longer allowed OR
+       // we cant get the tile at that level (local extracts could have this problem) THEN bail
+       graph_tile_ptr trans_tile = nullptr;
++      // WEDRIVE transition keeps region: переход между уровнями иерархии остаётся
++      // внутри одного региона, поэтому тег наследуется от узла, из которого идём.
++      const GraphId trans_end = trans->endnode().with_region(node.region());
+       if ((!trans->up() && !ignore_hierarchy_limits_ &&
+-           StopExpanding(hierarchy_limits[trans->endnode().level()], pred.distance())) ||
+-          !(trans_tile = graphreader.GetGraphTile(trans->endnode()))) {
++           StopExpanding(hierarchy_limits[trans_end.level()], pred.distance())) ||
++          !(trans_tile = graphreader.GetGraphTile(trans_end))) {
+         continue;
+       }
+ 
+       // setup for expansion at this level
+       hierarchy_limits[node.level()].set_up_transition_count(
+           hierarchy_limits[node.level()].up_transition_count() + trans->up());
+-      const auto* trans_node = trans_tile->node(trans->endnode());
++      const auto* trans_node = trans_tile->node(trans_end);
+       EdgeMetadata trans_meta =
+-          EdgeMetadata::make(trans->endnode(), trans_node, trans_tile, edgestatus);
++          EdgeMetadata::make(trans_end, trans_node, trans_tile, edgestatus);
+       uint32_t trans_shortcuts = 0;
+       // expand the edges from this node at this level
+       for (uint32_t i = 0; i < trans_node->edge_count(); ++i, ++trans_meta) {
+@@ -487,6 +495,35 @@ void BidirectionalAStar::Expand(baldr::GraphReader& graphreader,
+     }
+   }
+ 
++  // WEDRIVE portal expansion: ЕДИНСТВЕННОЕ место, которому разрешено сменить
++  // namespace. Портал — это не ребро внутри .gph, а внешняя запись, и обрабатывается
++  // он ровно тем же механизмом, что и переход между уровнями иерархии: мы просто
++  // раскрываем рёбра узла-близнеца в другом регионе. Регион приходит из portal.to,
++  // поэтому все построенные здесь EdgeLabel получают уже ЧУЖОЙ регион — что и есть
++  // пересечение границы.
++  if (const auto* portals = graphreader.PortalsAt(node)) {
++    for (const auto& portal : *portals) {
++      graph_tile_ptr portal_tile = graphreader.GetGraphTile(portal.to);
++      if (portal_tile == nullptr) {
++        continue;
++      }
++      const auto* portal_node = portal_tile->node(portal.to);
++      if (!costing_->Allowed(portal_node)) {
++        continue;
++      }
++      EdgeMetadata portal_meta =
++          EdgeMetadata::make(portal.to, portal_node, portal_tile, edgestatus);
++      uint32_t portal_shortcuts = 0;
++      for (uint32_t i = 0; i < portal_node->edge_count(); ++i, ++portal_meta) {
++        disable_uturn = ExpandInner<expansion_direction>(graphreader, pred, opp_pred_edge,
++                                                        portal_node, pred_idx, portal_meta,
++                                                        portal_shortcuts, portal_tile,
++                                                        offset_time) ||
++                        disable_uturn;
++      }
++    }
++  }
++
+   // Now, after having looked at all the edges, including edges on other levels,
+   // we can say if this is a deadend or not, and if so, evaluate the uturn-edge (if it exists)
+   if (!disable_uturn && uturn_meta) {
+@@ -1027,7 +1064,9 @@ void BidirectionalAStar::SetOrigin(GraphReader& graphreader,
+ 
+     // Get the tile at the end node. Skip if tile not found as we won't be
+     // able to expand from this origin edge.
+-    graph_tile_ptr endtile = graphreader.GetGraphTile(directededge->endnode());
++    // WEDRIVE SetOrigin endnode region: endnode из байтов тайла, регион у edgeid.
++    graph_tile_ptr endtile =
++        graphreader.GetGraphTile(directededge->endnode().with_region(edgeid.region()));
+     if (!endtile) {
+       continue;
+     }
+@@ -1525,7 +1564,9 @@ TimeInfo EstimateReverseStartTime(GraphReader& reader,
+   }
+ 
+   const DirectedEdge* directededge = tile->directededge(edgeid);
+-  graph_tile_ptr endtile = reader.GetGraphTile(directededge->endnode());
++  // WEDRIVE reverse start endnode region: то же самое на обратной стороне поиска.
++  graph_tile_ptr endtile =
++      reader.GetGraphTile(directededge->endnode().with_region(edgeid.region()));
+ 
+   if (!endtile) {
+     return TimeInfo::invalid();
+diff --git a/valhalla/baldr/graphid.h b/valhalla/baldr/graphid.h
+index c7b1db5..9a4ffa4 100644
+--- a/valhalla/baldr/graphid.h
++++ b/valhalla/baldr/graphid.h
+@@ -22,6 +22,20 @@ constexpr uint64_t kInvalidGraphId = 0x3fffffffffff;
+ // Value used to increment an Id by 1
+ constexpr uint64_t kIdIncrement = 1 << 25;
+ 
++// WEDRIVE: a region id in the spare high bits, IN MEMORY ONLY.
++//
++// Mjolnir writes 46 bits — level:3 | tileid:22 | id:21 — and every reference stored inside a tile
++// (DirectedEdge::endnode_, NodeTransition) is exactly those 46 bits. Bits 46..63 therefore never
++// reach a file, which is what makes them free to carry which independently built region a GraphId
++// belongs to while it is being used.
++//
++// It also means a cross-region link CANNOT be expressed as an endnode: there is nowhere to put
++// the other region. Portals are an external table for that reason, not by preference.
++constexpr uint64_t kGraphIdBits = 0x3fffffffffffULL; // the 46 bits Mjolnir writes
++constexpr uint64_t kRegionBits = ~kGraphIdBits;      // bits 46..63, ours
++constexpr uint32_t kRegionShift = 46;
++constexpr uint32_t kMaxRegionId = 0x3ffff;           // 18 bits
++
+ /**
+  * Identifier of a node or an edge within the tiled, hierarchical graph.
+  * Includes the tile Id, hierarchy level, and a unique identifier within
+@@ -128,7 +142,11 @@ public:
+    * @param  id  Id to set.
+    */
+   void set_id(const uint32_t id) {
+-    value = (value & 0x1ffffff) | (static_cast<uint64_t>(id & 0x1fffff) << 25);
++    // WEDRIVE set_id keeps region: маска 0x1ffffff оставляет level+tileid и стирает
++    // всё выше 25-го бита, включая наш регион. GetOpposingEdgeId заканчивается этим
++    // вызовом, поэтому без правки КАЖДОЕ противоположное ребро теряло namespace.
++    value = (value & (0x1ffffffULL | kRegionBits)) |
++            (static_cast<uint64_t>(id & 0x1fffff) << 25);
+   }
+ 
+   /**
+@@ -148,7 +166,23 @@ public:
+    */
+   bool is_valid() const {
+     // TODO: make this strict it should check the tile hierarchy not bit field widths
+-    return value != kInvalidGraphId;
++    // WEDRIVE: compare WITHOUT the region, or a tagged invalid id reads as valid.
++    return (value & kGraphIdBits) != kInvalidGraphId;
++  }
++
++  /** WEDRIVE: which independently built region this id belongs to (0 = the only one). */
++  inline uint32_t region() const {
++    return static_cast<uint32_t>(value >> kRegionShift);
++  }
++
++  /** WEDRIVE: the same id, tagged for a region. */
++  inline GraphId with_region(const uint32_t region) const {
++    return GraphId((value & kGraphIdBits) | (static_cast<uint64_t>(region) << kRegionShift));
++  }
++
++  /** WEDRIVE: the id as Mjolnir wrote it — what may be compared with tile contents. */
++  inline GraphId without_region() const {
++    return GraphId(value & kGraphIdBits);
+   }
+ 
+   /**
+@@ -157,7 +191,9 @@ public:
+    * @return graphid with only tileid and level included
+    */
+   GraphId tile_base() const {
+-    return GraphId((value & 0x1ffffff));
++    // WEDRIVE: keep the region. Dropping it would make every region's copy of the same
++    // geographic tile share one cache key, and the second load would serve the first's bytes.
++    return GraphId((value & 0x1ffffff) | (value & kRegionBits));
+   }
+ 
+   /**
+@@ -195,7 +231,9 @@ public:
+    * Advances the id
+    */
+   GraphId operator+(uint64_t offset) const {
+-    return GraphId(tileid(), level(), id() + offset);
++    // WEDRIVE operator+ keeps region: конструктор из компонентов региона не несёт.
++    // (operator++ трогать не надо — он прибавляет к value и верхние биты не задевает.)
++    return GraphId(tileid(), level(), id() + offset).with_region(region());
+   }
+ 
+   /**
+diff --git a/valhalla/baldr/graphreader.h b/valhalla/baldr/graphreader.h
+index 2446f71..b20160c 100644
+--- a/valhalla/baldr/graphreader.h
++++ b/valhalla/baldr/graphreader.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <atomic> // WEDRIVE atomic include: счётчик потерь региона
+ #include <valhalla/baldr/graphid.h>
+ #include <valhalla/baldr/graphtile.h>
+ #include <valhalla/baldr/tilegetter.h>
+@@ -161,6 +162,13 @@ protected:
+                                           : std::numeric_limits<uint32_t>::max();
+   }
+ 
++  // WEDRIVE: tiles from a registered region, keyed on the WHOLE GraphId value so the region
++  // bits are part of the key. The flat array below is indexed by level and tileid alone and
++  // cannot tell two regions' copies of a cell apart; rather than resize it for a region count
++  // that is unknown at construction, region 0 keeps the fast path untouched and anything tagged
++  // comes through here.
++  std::unordered_map<uint64_t, graph_tile_ptr> wedrive_region_cache_;
++
+   // The actual cached GraphTile objects
+   std::vector<graph_tile_ptr> cache_;
+ 
+@@ -433,6 +441,18 @@ public:
+  * Class that manages access to GraphTiles.
+  * Uses TileCache to keep a cache of tiles.
+  */
++/**
++ * WEDRIVE portal type: внешний переход между двумя независимо собранными графами.
++ *
++ * Это НЕ синтетическое ребро внутри .gph — формат тайлов не меняется. Портал живёт
++ * только в рантайме и является единственным механизмом, которому разрешено менять
++ * namespace: обычное ребро всегда наследует регион от текущего тайла.
++ */
++struct WeDrivePortal {
++  GraphId to;
++  float distance; // метры реальной дороги между концами; 0 — если это один узел
++};
++
+ class GraphReader {
+ public:
+   /**
+@@ -483,6 +503,76 @@ public:
+    * @param tile the tile pointer that may already contain a graphtile, output value
+    * @return graph_tile_ptr& reference to the tile parameter
+    */
++  /**
++   * WEDRIVE: register an independently built region.
++   *
++   * Each region is a Mjolnir run that knew nothing of the others, so two regions may hold the
++   * same tile FILENAME with different contents — measured on Moldova and Romania: 35 shared
++   * paths, none byte-identical. The region id rides in the spare high bits of a GraphId, which
++   * never reach a file, so nothing about the tile format changes.
++   *
++   * Region 0 is the unregistered default and reads from the ordinary tile_dir.
++   */
++  void AddRegion(const uint32_t region, const std::string& tile_dir) {
++    // WEDRIVE region cap: EdgeLabel хранит регион в 3 битах, отнятых у `spare`.
++    // Регион 8 там молча превратится в 0 и машина уедет в чужую страну, поэтому
++    // здесь громкий отказ, а не обрезание. Это ограничение ПРОТОТИПА: расширение
++    // namespace до сотен регионов — отдельная задача, см. MULTI-REGION.md.
++    if (region >= kWeDriveMaxRegions) {
++      throw std::runtime_error("WEDRIVE: region id " + std::to_string(region) +
++                               " exceeds the " + std::to_string(kWeDriveMaxRegions) +
++                               " that EdgeLabel's 3 spare bits can carry");
++    }
++    wedrive_region_dirs_[region] = tile_dir;
++  }
++
++  /** WEDRIVE: сколько регионов помещается в 3 бита EdgeLabel::region_. */
++  static constexpr uint32_t kWeDriveMaxRegions = 8;
++
++  /** WEDRIVE: the directory a region's tiles live in; the stock tile_dir for region 0. */
++  const std::string& TileDirForRegion(const uint32_t region) const {
++    auto found = wedrive_region_dirs_.find(region);
++    return found == wedrive_region_dirs_.end() ? tile_dir_ : found->second;
++  }
++
++  /** WEDRIVE: how many independently built regions are registered. */
++  size_t RegionCount() const {
++    return wedrive_region_dirs_.size();
++  }
++
++  /** WEDRIVE portal table: одна запись на направление; две записи делают переход
++   *  двусторонним. Обе стороны — настоящие узлы своих графов. */
++  void AddPortal(const GraphId& from, const GraphId& to, const float distance) {
++    wedrive_portals_[from.value].push_back({to, distance});
++  }
++
++  /** WEDRIVE: порталы, выходящие из этого узла, или nullptr. Горячий путь в Thor,
++   *  поэтому сначала дешёвая проверка на пустую таблицу. */
++  const std::vector<WeDrivePortal>* PortalsAt(const GraphId& node) const {
++    if (wedrive_portals_.empty()) {
++      return nullptr;
++    }
++    auto found = wedrive_portals_.find(node.value);
++    return found == wedrive_portals_.end() ? nullptr : &found->second;
++  }
++
++  size_t PortalCount() const {
++    size_t n = 0;
++    for (const auto& e : wedrive_portals_) {
++      n += e.second.size();
++    }
++    return n;
++  }
++
++  /** WEDRIVE: сколько раз GetGraphTile получил id без региона при нескольких
++   *  зарегистрированных регионах. Ноль — обязательное условие зелёного теста. */
++  static uint64_t WeDriveRegionLost() {
++    return wedrive_region_lost_.load(std::memory_order_relaxed);
++  }
++  static void WeDriveResetRegionLost() {
++    wedrive_region_lost_.store(0, std::memory_order_relaxed);
++  }
++
+   graph_tile_ptr& GetGraphTile(const GraphId& graphid, graph_tile_ptr& tile) {
+     return !tile || tile->id() != graphid.tile_base() ? tile = GetGraphTile(graphid) : tile;
+   }
+@@ -984,6 +1074,15 @@ protected:
+   // Information about where the tiles are kept
+   const std::string tile_dir_;
+ 
++  // WEDRIVE portal members: внешняя таблица переходов, ключ — полный tagged GraphId
++  // узла-источника. Пустая в stock-сценарии, и тогда PortalsAt выходит сразу.
++  std::unordered_map<uint64_t, std::vector<WeDrivePortal>> wedrive_portals_;
++  static inline std::atomic<uint64_t> wedrive_region_lost_{0};
++
++  // WEDRIVE: one tile directory per independently built region. Empty in a stock setup, in which
++  // case TileDirForRegion always returns tile_dir_ and nothing behaves differently.
++  std::unordered_map<uint32_t, std::string> wedrive_region_dirs_;
++
+   // Stuff for getting at remote tiles
+   std::unique_ptr<tile_getter_t> tile_getter_;
+   const size_t max_concurrent_users_;
+diff --git a/valhalla/baldr/graphtile.h b/valhalla/baldr/graphtile.h
+index 741ace0..9ed021a 100644
+--- a/valhalla/baldr/graphtile.h
++++ b/valhalla/baldr/graphtile.h
+@@ -240,7 +240,32 @@ public:
+    * @return  Returns the graph id of the tile (pointing to the first node)
+    */
+   GraphId id() const {
+-    return header_->graphid();
++    // WEDRIVE: the header knows nothing of regions — it was written by a Mjolnir run that had
++    // only one. The reader compares `tile->id() != graphid.tile_base()` to decide a cache hit,
++    // so a tile must answer with the region it was loaded FOR. region 0 is the identity, which
++    // is why a single-region setup is bit-for-bit the stock behaviour.
++    return header_->graphid().with_region(wedrive_region_);
++  }
++
++  // WEDRIVE tile identity asserts: четыре проверки принадлежности id этому тайлу
++  // сравниваются с id(), а не с заголовком, потому что заголовок региона не содержит.
++  // Побочный и главный эффект: они теперь ловят обращение к узлу ЧУЖОГО региона.
++  /**
++   * WEDRIVE: принадлежит ли id этому тайлу.
++   *
++   * Сравнение идёт БЕЗ региона, потому что внутри тайла индекс считается по младшим
++   * битам и регион там не участвует. Но если регион в id всё-таки проставлен и он
++   * ЧУЖОЙ — это обращение к узлу другой страны через тайл этой, то есть ровно та тихая
++   * ошибка, ради которой затевался весь multi-region. Такое падает сразу.
++   */
++  bool wedrive_id_ok(const GraphId& other) const {
++    return other.tile_base().without_region() == id().tile_base().without_region() &&
++           (other.region() == 0 || other.region() == wedrive_region_);
++  }
++
++  /** WEDRIVE: which independently built region this tile was loaded for. */
++  uint32_t wedrive_region() const {
++    return wedrive_region_;
+   }
+ 
+   /**
+@@ -256,7 +281,7 @@ public:
+    * @return  Returns a pointer to the node.
+    */
+   const NodeInfo* node(const GraphId& node) const {
+-    assert(node.tile_base() == header_->graphid().tile_base());
++    assert(wedrive_id_ok(node));
+     if (node.id() < header_->nodecount()) {
+       return &nodes_[node.id()];
+     }
+@@ -288,7 +313,7 @@ public:
+    * @param  nodeid  GraphId of the node.
+    */
+   midgard::PointLL get_node_ll(const GraphId& nodeid) const {
+-    assert(nodeid.tile_base() == header_->graphid().tile_base());
++    assert(wedrive_id_ok(nodeid));
+     return node(nodeid)->latlng(base_ll_);
+   }
+ 
+@@ -298,7 +323,7 @@ public:
+    * @return  Returns a pointer to the edge.
+    */
+   const DirectedEdge* directededge(const GraphId& edge) const {
+-    assert(edge.tile_base() == header_->graphid().tile_base());
++    assert(wedrive_id_ok(edge));
+     if (edge.id() < header_->directededgecount()) {
+       return &directededges_[edge.id()];
+     }
+@@ -329,7 +354,7 @@ public:
+    * @return  Returns a pointer to the edge extension.
+    */
+   const DirectedEdgeExt* ext_directededge(const GraphId& edge) const {
+-    assert(edge.tile_base() == header_->graphid().tile_base());
++    assert(wedrive_id_ok(edge));
+ 
+     // Testing against directededgecount since the number of directed edges
+     // should be the same as the number of directed edge extensions
+@@ -952,6 +977,10 @@ protected:
+   // Graph tile memory. A Graph tile owns its memory.
+   std::unique_ptr<const GraphMemory> memory_;
+ 
++  // WEDRIVE: set from the GraphId this tile was requested with, so the tile can report an id
++  // that matches what the reader asked for. Zero unless several regions are registered.
++  uint32_t wedrive_region_{0};
++
+   // Header information for the tile
+   GraphTileHeader* header_{};
+ 
+diff --git a/valhalla/sif/edgelabel.h b/valhalla/sif/edgelabel.h
+index c8985fe..d49dfd9 100644
+--- a/valhalla/sif/edgelabel.h
++++ b/valhalla/sif/edgelabel.h
+@@ -40,7 +40,8 @@ public:
+         origin_(0), destination_(0), toll_(0), not_thru_(0), deadend_(0), on_complex_rest_(0),
+         closure_pruning_(0), path_id_(0), restriction_idx_(0), internal_turn_(0), unpaved_(0),
+         has_measured_speed_(0), hgv_access_(0), bridge_(0), tunnel_(0),
+-        destonly_access_restr_mask_(0), cost_(0, 0), sortcost_(0) {
++        destonly_access_restr_mask_(0), region_(0), // WEDRIVE region default
++        cost_(0, 0), sortcost_(0) {
+     assert(path_id_ <= baldr::kMaxMultiPathId);
+   }
+ 
+@@ -92,9 +93,14 @@ public:
+         closure_pruning_(closure_pruning), path_id_(path_id), restriction_idx_(restriction_idx),
+         internal_turn_(static_cast<uint8_t>(internal_turn)), unpaved_(edge->unpaved()),
+         has_measured_speed_(has_measured_speed), hgv_access_(hgv_access), bridge_(edge->bridge()),
+-        tunnel_(edge->tunnel()), destonly_access_restr_mask_(destonly_access_restr_mask), cost_(cost),
+-        sortcost_(sortcost) {
++        tunnel_(edge->tunnel()), destonly_access_restr_mask_(destonly_access_restr_mask),
++        // WEDRIVE region from edgeid: an edge and its end node are in the same region.
++        // Only a portal may differ, and a portal builds its label deliberately.
++        region_(static_cast<uint32_t>(edgeid.region())), cost_(cost), sortcost_(sortcost) {
+     dest_only_ = destonly ? destonly : edge->destonly();
++    // Fail fast rather than truncate: 3 bits cannot hold region 8, and a truncated
++    // region silently routes into another country's graph.
++    assert(edgeid.region() < 8 && "WEDRIVE: region id exceeds EdgeLabel's 3 bits");
+     assert(path_id_ <= baldr::kMaxMultiPathId);
+   }
+ 
+@@ -134,7 +140,9 @@ public:
+    * @return  Returns the GraphId of this directed edge.
+    */
+   baldr::GraphId edgeid() const {
+-    return baldr::GraphId(edgeid_);
++    // WEDRIVE tagged edgeid: stored region-less, handed back tagged, so every caller
++    // in Thor gets a resolvable id without any of them being edited.
++    return baldr::GraphId(edgeid_).with_region(region_);
+   }
+ 
+   /**
+@@ -144,7 +152,9 @@ public:
+    * @return  Returns the GraphId of the end node of this directed edge.
+    */
+   baldr::GraphId endnode() const {
+-    return baldr::GraphId(endnode_);
++    // WEDRIVE tagged endnode: this single line is what covers all 100 endnode() reads
++    // across the 13 Thor files. The stored 46-bit value never had a region.
++    return baldr::GraphId(endnode_).with_region(region_);
+   }
+ 
+   /**
+@@ -152,6 +162,13 @@ public:
+    * @return  Returns the cost (units are based on the costing method)
+    *          and elapsed time (seconds) to the end of the directed edge.
+    */
++  /**
++   * WEDRIVE region accessor: which graph namespace this label lives in.
++   */
++  uint32_t region() const {
++    return region_;
++  }
++
+   const Cost& cost() const {
+     return cost_;
+   }
+@@ -483,7 +500,10 @@ protected:
+   // an access restriction with an exemption for local traffic
+   uint32_t destonly_access_restr_mask_ : 7;
+ 
+-  uint32_t spare : 3;
++  // WEDRIVE region storage: the region this label's edge AND end node belong to.
++  // Both ids are stored region-less (46 bits each, no room), so this is the only
++  // copy and the accessors below put it back. 3 bits: regions 1..7, 0 = untagged.
++  uint32_t region_ : 3;
+ 
+   Cost cost_;      // Cost and elapsed time along the path.
+   float sortcost_; // Sort cost - includes A* heuristic.
+@@ -828,7 +848,10 @@ public:
+    * @return  Returns the GraphId of the opposing directed edge.
+    */
+   baldr::GraphId opp_edgeid() const {
+-    return baldr::GraphId(opp_edgeid_);
++    // WEDRIVE tagged opp_edgeid: третий id лейбла. Обратное дерево двунаправленного
++    // поиска читает его на каждом шаге, поэтому без тега оно теряло namespace лавинообразно.
++    // Противоположное ребро — та же физическая дорога, значит тот же регион.
++    return baldr::GraphId(opp_edgeid_).with_region(region());
+   }
+ 
+   /**
+diff --git a/valhalla/thor/pathalgorithm.h b/valhalla/thor/pathalgorithm.h
+index 978f468..20488f9 100644
+--- a/valhalla/thor/pathalgorithm.h
++++ b/valhalla/thor/pathalgorithm.h
+@@ -189,7 +189,11 @@ struct EdgeMetadata {
+                                   const baldr::NodeInfo* nodeinfo,
+                                   const baldr::graph_tile_ptr& tile,
+                                   EdgeStatus& edge_status_) {
+-    baldr::GraphId edge_id = {node.tileid(), node.level(), nodeinfo->edge_index()};
++    // WEDRIVE keep region in edge_id: this constructor takes tileid/level/index and
++    // knows nothing of the region, so it must be re-applied from the node we came from.
++    baldr::GraphId edge_id =
++        baldr::GraphId(node.tileid(), node.level(), nodeinfo->edge_index())
++            .with_region(node.region());
+     EdgeStatusInfo* edge_status = edge_status_.GetPtr(edge_id, tile);
+     const baldr::DirectedEdge* directededge = tile->directededge(edge_id);
+     return {directededge, edge_id, edge_status};

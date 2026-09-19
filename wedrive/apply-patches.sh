@@ -1,36 +1,45 @@
 #!/usr/bin/env bash
-# Restore the five touched files from the pristine clone, then apply both patches exactly once.
+# Применяет ВСЕ патчи WeDrive к дереву Valhalla по порядку номеров.
 #
-# The first attempt applied the GraphId constants twice, because the idempotency check looked for
-# a marker that the first edit had not yet written. Restoring is cheaper and surer than trying to
-# unpick a double-applied patch.
+# Предыдущая версия этого скрипта ссылалась на каталог конкретной сессии и в другой сессии просто
+# не находила файлов. Здесь патчи берутся из каталога рядом со скриптом, а дерево Valhalla
+# указывается аргументом — так он работает и в контейнере, и на хосте.
+#
+# Каждый патч идемпотентен и сам проверяет свои куски по уникальным маркерам, поэтому повторный
+# запуск безопасен. Порядок важен: patch-15 (GraphId сохраняет регион) должен лечь до того, как
+# что-либо начнёт полагаться на арифметику id.
+#
+#   usage: apply-patches.sh [путь-к-дереву-valhalla]     (по умолчанию /src/valhalla)
 set -u
-SP="/mnt/c/Users/vpere/AppData/Local/Temp/claude/C--Users-vpere-AndroidStudioProjects-wedrive/9d672018-fcd7-4735-9e25-f33a3c723c7f/scratchpad"
-SRC="$HOME/vhbuild/src"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="${1:-/src/valhalla}"
 
-echo "=== restoring pristine files into the container ==="
+if [ ! -d "$SRC/valhalla/baldr" ]; then
+  echo "!! $SRC не похож на дерево Valhalla" >&2
+  exit 2
+fi
+
+echo "=== применяю патчи к $SRC"
+fail=0
+for p in $(ls "$HERE"/patch-*.py | sort -t- -k2 -n); do
+  name="$(basename "$p")"
+  echo
+  echo "--- $name"
+  # Патчи 1-5 писались с SRC = ~/vhbuild/src, патчи 6+ с /src/valhalla. Нормализуем оба варианта
+  # во временной копии, чтобы не редактировать сам патч.
+  tmp="/tmp/$name"
+  sed -e "s#os.path.expanduser(\"~/vhbuild/src\")#\"$SRC\"#" \
+      -e "s#^SRC = \"/src/valhalla\"#SRC = \"$SRC\"#" "$p" > "$tmp"
+  python3 "$tmp" || { echo "   !! $name завершился с ошибкой"; fail=1; }
+done
+
+echo
+echo "=== маркеры WEDRIVE по файлам (ноль где-либо = патч не лёг)"
 for f in valhalla/baldr/graphid.h valhalla/baldr/graphtile.h valhalla/baldr/graphreader.h \
-         src/baldr/graphtile.cc src/baldr/graphreader.cc; do
-  docker cp "$SRC/$f" "vhdev:/src/valhalla/$f" >/dev/null
-  printf '  %-40s %s\n' "$f" "$(docker exec vhdev grep -c WEDRIVE "/src/valhalla/$f" || true)"
+         valhalla/sif/edgelabel.h valhalla/thor/pathalgorithm.h valhalla/thor/edgestatus.h \
+         src/baldr/graphtile.cc src/baldr/graphreader.cc src/sif/recost.cc \
+         src/thor/bidirectional_astar.cc; do
+  printf '   %-42s %s\n' "$f" "$(grep -c WEDRIVE "$SRC/$f" 2>/dev/null || echo '-')"
 done
 
-for f in patch_multiregion.py patch_mr2.py wedrive_regions_test.cc; do
-  sed 's/\r$//' "$SP/$f" > "/tmp/$f"
-  docker cp "/tmp/$f" "vhdev:/tmp/$f" >/dev/null
-done
-
-echo
-echo "=== applying once ==="
-docker exec vhdev bash -c '
-  cd /tmp
-  sed -i "s#os.path.expanduser(\"~/vhbuild/src\")#\"/src/valhalla\"#" patch_multiregion.py patch_mr2.py
-  python3 patch_multiregion.py && echo && python3 patch_mr2.py'
-rc=$?
-echo
-echo "=== WEDRIVE markers per file (each should appear once per edit) ==="
-docker exec vhdev bash -c 'grep -c WEDRIVE /src/valhalla/valhalla/baldr/graphid.h \
-  /src/valhalla/valhalla/baldr/graphtile.h /src/valhalla/src/baldr/graphtile.cc \
-  /src/valhalla/valhalla/baldr/graphreader.h /src/valhalla/src/baldr/graphreader.cc'
-echo "constants defined once? $(docker exec vhdev grep -c kRegionShift /src/valhalla/valhalla/baldr/graphid.h) occurrences of kRegionShift (2 = declaration + use)"
-exit $rc
+exit $fail

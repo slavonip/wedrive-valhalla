@@ -38,6 +38,13 @@ def patch(path, old, new, why):
     global edits
     p = os.path.join(SRC, path)
     s = io.open(p, encoding="utf-8").read()
+    # WEDRIVE idempotency guard. Прежнее условие требовало `old not in s`, но здесь `new`
+    # СОДЕРЖИТ `old` — константы дописываются ПЕРЕД существующей строкой. Значит условие было
+    # ложно всегда, и повторный прогон добавлял ещё один экземпляр констант: сборка падала на
+    # redefinition of kGraphIdBits. Достаточно спросить, есть ли уже весь новый текст.
+    if new.strip() and new.strip() in s:
+        print(f"   already applied: {path} — {why}")
+        return
     if new.strip() and new.strip().splitlines()[0] in s and old not in s:
         print(f"   already applied: {path} — {why}")
         return
