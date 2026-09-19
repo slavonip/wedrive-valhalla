@@ -1,0 +1,23 @@
+{
+  "name": "wedrive-valhalla-android",
+  "version-string": "1.0.0",
+  "description": "Зависимости патченого движка для Android. Список унаследован от Rallista/valhalla-mobile (MIT) — он уже проверен на всех четырёх ABI, и сокращать его по догадке было бы сменой рабочего набора на непроверенный. Здесь нет sqlite3, luajit, geos и curl: они нужны mjolnir и сервисам, а те выключены.",
+  "dependencies": [
+    "protobuf",
+    "boost-algorithm",
+    "boost-foreach",
+    "boost-format",
+    "boost-geometry",
+    "boost-heap",
+    "boost-optional",
+    "boost-property-tree",
+    "boost-range",
+    "boost-tokenizer",
+    "robin-hood-hashing",
+    "rapidjson",
+    "lz4",
+    "abseil",
+    "unordered-dense"
+  ],
+  "builtin-baseline": "f176b58f35a75f9f8f54099cd9df97d2e2793a2e"
+}

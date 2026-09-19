@@ -1,0 +1,8 @@
+# Статическая линковка — не предпочтение, а требование: приложение везёт ОДИН .so, и
+# зависимости обязаны оказаться внутри него, а не рядом отдельными файлами.
+set(VCPKG_TARGET_ARCHITECTURE x64)
+set(VCPKG_CRT_LINKAGE static)
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CMAKE_SYSTEM_NAME Android)
+set(VCPKG_MAKE_BUILD_TRIPLET "--host=x86_64-linux-android")
+set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DANDROID_ABI=x86_64)

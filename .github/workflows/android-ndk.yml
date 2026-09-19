@@ -1,0 +1,107 @@
+name: android .so
+
+# Кросс-сборка патченого движка под Android.
+#
+# Runtime при этом НЕ меняется: он заморожен на multi-region-runtime-v2, а сборка под другую
+# платформу — это конфигурация. Ни один файл из src/, valhalla/ или wedrive/ здесь не правится.
+#
+# Долго это будет только в первый раз: vcpkg собирает protobuf, boost и abseil под чужую ABI из
+# исходников. Дальше работает кэш.
+
+on:
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: "ABI: arm64-v8a (машина), x86_64 (эмулятор) или both"
+        required: false
+        default: "arm64-v8a"
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/android-ndk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            triplet: arm64-android
+          - abi: x86_64
+            triplet: x64-android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: что собираем
+        run: |
+          echo "ABI: ${{ matrix.abi }}, triplet: ${{ matrix.triplet }}"
+          echo "движок: $(git describe --tags --always)"
+          df -h / | tail -1
+
+      # API 31 — не произвольное число: это пол всего проекта, потому что головное устройство
+      # Zeekr работает на Android 12. Собрать под что-то новее значит собрать то, что не
+      # установится в машину.
+      - name: NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+
+      - name: vcpkg
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+          "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
+
+      - name: кэш зависимостей vcpkg
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-${{ matrix.triplet }}-${{ hashFiles('android/vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.triplet }}-
+
+      - name: конфигурация
+        run: |
+          cmake -S android -B "build/${{ matrix.abi }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake" \
+            -DVCPKG_OVERLAY_TRIPLETS="$PWD/android/triplets" \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-31 \
+            -DCMAKE_BUILD_TYPE=Release \
+            2>&1 | tail -60
+
+      - name: сборка
+        run: cmake --build "build/${{ matrix.abi }}" -j"$(nproc)" 2>&1 | tail -80
+
+      # Библиотека обязана отвечать, ЧТО в ней собрано: патченый движок снаружи неотличим от
+      # стокового до первого маршрута через границу, и приложение, положившее не тот .so, узнает
+      # об этом в машине.
+      - name: что внутри .so
+        run: |
+          SO=$(find "build/${{ matrix.abi }}" -name 'libwedrive_valhalla.so' | head -1)
+          [ -n "$SO" ] || { echo "библиотека не собралась"; exit 1; }
+          ls -la "$SO"
+          echo "--- ABI:"
+          file "$SO" || true
+          echo "--- наши символы:"
+          "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
+            -D --defined-only "$SO" | grep wedrive_ || echo "  НЕТ НАШИХ СИМВОЛОВ"
+          echo "--- символы движка (должны быть, иначе .so пустой):"
+          "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
+            -D --defined-only "$SO" | grep -c valhalla || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wedrive-valhalla-${{ matrix.abi }}
+          path: build/${{ matrix.abi }}/**/libwedrive_valhalla.so
+          if-no-files-found: error
