@@ -65,4 +65,26 @@ if(ANDROID)
     "-Wl,--whole-archive" "$<TARGET_FILE:valhalla>" "-Wl,--no-whole-archive")
 endif()
 
+
+# ── PROTOBUF ЯВНО ────────────────────────────────────────────────────────────────────────────
+#
+# Линковка падала на ЕДИНСТВЕННОМ символе
+# `google::protobuf::internal::ThreadSafeArena::thread_cache_`. Измерено: в libprotobuf.a его нет
+# ни в прямой форме, ни в эмулированной — значит он в соседнем архиве (arena.cc относится к
+# LITE-части protobuf), а тот на строку линковки не попадает: `--whole-archive` берёт только
+# valhalla, а транзитивные зависимости через путь к файлу не передаются.
+#
+# Отсюда явная ссылка на обе половины. Она безвредна, если они уже там: линкер возьмёт архив один
+# раз. И она под `if(TARGET)`, потому что имя цели зависит от того, как protobuf собран, а
+# отсутствие цели уронило бы конфигурацию с сообщением про CMake, а не про protobuf.
+find_package(Protobuf CONFIG QUIET)
+foreach(_pb protobuf::libprotobuf protobuf::libprotobuf-lite)
+  if(TARGET ${_pb})
+    message(STATUS "WeDrive: линкую ${_pb}")
+    target_link_libraries(wedrive_valhalla PRIVATE ${_pb})
+  else()
+    message(STATUS "WeDrive: цели ${_pb} нет")
+  endif()
+endforeach()
+
 install(TARGETS wedrive_valhalla LIBRARY DESTINATION lib)
