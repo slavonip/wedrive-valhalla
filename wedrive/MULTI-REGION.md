@@ -476,6 +476,38 @@ than adding test hooks to a production header.
 > **compares checksums against the ones it recorded at the start** — proving the restore rather
 > than promising it.
 
+## The manifest, and why a portal table carries two versions
+
+First piece of the package pipeline, and its shape is dictated by a measurement rather than by
+taste. Updating Romania 2026-09-01 -> 2026-09-18 changed **636 of 636 tiles** and **20 of 32 portal
+id pairs**. A portal table therefore belongs not to a border but to a *specific pair of builds*, so
+each entry names both versions:
+
+```
+portals:
+  MD-RO:
+    versions: [MD-2026-09-16, RO-2026-09-01]
+```
+
+`tools/make-manifest.py build` writes this from what is actually on disk — graph version from the
+source extract's OSM timestamp, checksum from the files themselves — and `plan` answers the
+question the downloader has to get right:
+
+| country updated | download | leave alone |
+|---|---|---|
+| **RO** | `ro.tar` + **MD-RO** + **RO-HU** | `md.tar`, `hu.tar` |
+| MD | `md.tar` + MD-RO | `ro.tar`, `hu.tar`, RO-HU |
+| HU | `hu.tar` + RO-HU | `md.tar`, `ro.tar`, MD-RO |
+
+> **Updating one country pulls ALL of its portal tables, not just the border with a neighbour that
+> also changed.** Romania's ids move as a whole when it is rebuilt, and Romania's ids appear in
+> both of its tables. Stale ones do not corrupt anything — `AddPortal` rejects them and says how
+> many — but the crossings they describe simply stop existing until the tables catch up.
+
+The checksum does real work rather than decorating the file: the two Romanian builds differ by
+**0.24 %** in size, so size alone would not tell them apart, while the digests differ from the
+first byte.
+
 ## Next
 
 1. Teach Thor's bidirectional A* the same re-tagging rule and the portal expansion.
