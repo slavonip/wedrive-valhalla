@@ -73,11 +73,94 @@ small penalty, so the path does not churn between two copies of the same tarmac.
 
 ## What is deliberately still stock
 
-- Mjolnir. Tiles are built by unmodified `valhalla_build_tiles`.
+- Mjolnir, **with one exception**: `NodeInfo::can_contract()` also refuses `kBorderControl`.
+  Everything else in the builder is stock, and the `.gph` format is untouched — the flag
+  changes only which shortcuts get built. See *The border post* below for why.
 - The `.gph` format, including `GraphTileHeader` (272 B, `static_assert`-ed), `NodeInfo` (32 B),
   `NodeTransition` (8 B) and `DirectedEdge` (48 B).
 - Thor, Sif and Odin. The proof harness is separate, on purpose: changing the runtime's *reader*
   and changing its *search* are two risks and were taken one at a time.
+
+## The border post — where +2.8 % on Chișinău → Bucharest came from
+
+Bidirectional A* on the composite returned **469.423 km** where the monolith returned **456.458**,
+and the search's own estimate of the winning connection was **1234.44** below what `recost` charged
+for the very same edges. The hunt narrowed to a single pair of `GraphId`s and then, being measured
+rather than reasoned about, went somewhere else entirely.
+
+**The multi-region runtime was not at fault, and the control says so plainly.** Forced onto one and
+the same corridor, the two graphs agree:
+
+| forced route | monolith | composite |
+|---|---|---|
+| Chișinău → Bârlad | 166.560 km, estimate == recost | 166.560 km, estimate == recost |
+| Leușeni → Bucharest | 378.947 km | 378.947 km |
+| Chișinău → *(past Albița)* → Bucharest | 469.419 km | 469.417 km |
+
+Two metres over 469 km. The composite does not compute the corridor differently — it *prefers* it,
+because free-search its estimate for that corridor is 1234 too cheap.
+
+**The 1234 is two border posts, and the cost of a post hangs on the NODE:**
+
+```cpp
+c += country_crossing_cost_ * (node->type() == baldr::NodeType::kBorderControl);  // 600 s
+```
+
+A shortcut's cost is the cost of its edges. Transitions at its *interior* nodes are not in it and
+never were. So a shortcut laid through a border post hides 600 seconds from the search, and `recost`
+presents the bill only after the path has been chosen. Albița–Leușeni has a post on each side:
+600 + 600.
+
+**Why the coherent build escapes it, measured on the posts themselves:**
+
+| node | monolith | Moldova alone | Romania alone |
+|---|---|---|---|
+| 46.48059, 28.23211 | 4 edges, not covered | 2 edges, covered by shortcut `7257` (2297 m) | 2 edges, covered by `828` |
+| 46.48380, 28.22821 | 4 edges, not covered | 2 edges, covered | 2 edges, covered |
+
+`CanContract` demands exactly two edges at the node. In a coherent graph the post carries both
+countries' carriageways and has four, so contraction is refused. A Geofabrik extract is clipped at
+the border, the far side is gone, the degree falls to two — and the guard stops guarding. Shortcut
+`7257` is precisely the one on the failing path.
+
+**The guard that should have caught it regardless is an upstream omission:**
+
+```cpp
+// baldr/nodeinfo.h — every other cost-bearing node type is listed
+return edge_count() >= 2 && intersection() != IntersectionType::kFork &&
+       type() != NodeType::kGate && type() != NodeType::kTollBooth &&
+       type() != NodeType::kTollGantry && type() != NodeType::kSumpBuster;
+```
+
+Gate 300 s, toll booth 15 s, toll gantry, sump buster — all excluded. `kBorderControl`, at 600 s the
+dearest of them, is not. The stock monolith carries 168 such shortcuts at level 0 and under-charges
+its own chosen path by 150; it simply never puts one where it matters. Adding the missing term is
+patch 46, and it is the whole fix.
+
+**Result, shortcuts enabled throughout — their count went *up*, 2190 → 2232 in Moldova, because a
+shortcut now ends at a post instead of running through it:**
+
+| | stock | with patch 46 |
+|---|---|---|
+| composite, bidirectional | 469.423 km | **456.448 km** |
+| monolith, bidirectional | 456.458 km | 456.431 km |
+| composite, time-dependent | 456.458 km | 456.458 km |
+| estimate vs recost, composite | 1234.44 | **33.43** |
+| posts covered by a shortcut (MD / RO) | 132 / 116 | **0 / 0** |
+| region lost | 0 | 0 |
+
+Every other route in the regression table is unchanged to within its previous divergence; the two
+that moved are Chișinău → Bucharest and its reverse, both by ~13 km, both onto the monolith's answer.
+
+> **The measurement that mattered most was the one that disproved the tidy theory.** The first
+> account of this — two border charges where the monolith pays one, an artifact of each half seeing
+> its own frontier — was wrong. Forcing both graphs onto the same crossing showed both paying both
+> posts and agreeing to two metres. The posts are real and the double charge is correct; what is
+> wrong is only that the search cannot see them. Three earlier suspects died the same way, by being
+> measured: `shortcut_recovery_t` (12 shortcuts, zero foreign-region components, total delta 1.34),
+> the forward label chain (592 labels, self-consistent to a constant −15.69 that is the origin's
+> partial edge), and the meeting edge itself (`pred.opp_edgeid() == opp_pred.edgeid()`, equal with
+> the region tag and without it).
 
 ## Next
 

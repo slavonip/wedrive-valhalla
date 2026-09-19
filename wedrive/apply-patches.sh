@@ -35,7 +35,7 @@ done
 
 echo
 echo "=== маркеры WEDRIVE по файлам (ноль где-либо = патч не лёг)"
-for f in valhalla/baldr/graphid.h valhalla/baldr/graphtile.h valhalla/baldr/graphreader.h \
+for f in valhalla/baldr/nodeinfo.h valhalla/baldr/graphid.h valhalla/baldr/graphtile.h valhalla/baldr/graphreader.h \
          valhalla/sif/edgelabel.h valhalla/thor/pathalgorithm.h valhalla/thor/edgestatus.h \
          src/baldr/graphtile.cc src/baldr/graphreader.cc src/sif/recost.cc \
          src/thor/bidirectional_astar.cc; do
