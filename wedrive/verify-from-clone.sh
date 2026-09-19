@@ -17,13 +17,23 @@ fail=0
 note() { printf '%-46s %s\n' "$1" "$2"; [ "$2" = "OK" ] || fail=1; }
 
 echo "=== 1. дерево Valhalla возвращается к стоковому"
-docker exec vhdev bash -c "cd $SRC && git checkout -- \
-  valhalla/baldr/graphid.h valhalla/baldr/graphtile.h valhalla/baldr/graphreader.h \
-  valhalla/sif/edgelabel.h valhalla/thor/pathalgorithm.h valhalla/thor/edgestatus.h \
-  src/baldr/graphtile.cc src/baldr/graphreader.cc src/sif/recost.cc \
-  src/thor/bidirectional_astar.cc"
-left=$(docker exec vhdev bash -c "grep -c WEDRIVE $SRC/valhalla/baldr/graphid.h || true")
-note "маркеров WEDRIVE после отката: $left" "$([ "$left" = "0" ] && echo OK || echo ПРОВАЛ)"
+# Список патчуемых файлов — один на весь скрипт. Файл, забытый здесь, остался бы
+# пропатченным во время «проверки из чистого клона», и тест был бы зелёным ровно по той
+# причине, которую он обязан исключить.
+WEDRIVE_FILES="valhalla/baldr/graphid.h valhalla/baldr/graphtile.h valhalla/baldr/graphreader.h \
+  valhalla/baldr/nodeinfo.h valhalla/sif/edgelabel.h valhalla/thor/pathalgorithm.h \
+  valhalla/thor/edgestatus.h valhalla/thor/dijkstras.h valhalla/loki/search.h \
+  valhalla/meili/candidate_search.h \
+  src/baldr/graphtile.cc src/baldr/graphreader.cc src/baldr/shortcut_recovery.h \
+  src/sif/recost.cc \
+  src/thor/bidirectional_astar.cc src/thor/unidirectional_astar.cc src/thor/triplegbuilder.cc \
+  src/thor/map_matcher.cc src/thor/costmatrix.cc src/thor/dijkstras.cc \
+  src/meili/candidate_search.cc src/meili/map_matcher.cc src/meili/routing.cc \
+  src/loki/route_action.cc src/loki/trace_route_action.cc src/loki/matrix_action.cc \
+  src/loki/isochrone_action.cc src/loki/locate_action.cc src/loki/worker.cc"
+docker exec vhdev bash -c "cd $SRC && git checkout -- $WEDRIVE_FILES"
+left=$(docker exec vhdev bash -c "cd $SRC && grep -l WEDRIVE $WEDRIVE_FILES 2>/dev/null | wc -l")
+note "файлов с маркерами после отката: $left" "$([ "$left" = "0" ] && echo OK || echo ПРОВАЛ)"
 
 echo
 echo "=== 2. патчи из репозитория"
@@ -34,9 +44,9 @@ note "apply-patches.sh" "$(grep -q 'MISSING' /tmp/apply.log && echo ПРОВАЛ
 
 echo
 echo "=== 3. идемпотентность: второй прогон ничего не меняет"
-sum1=$(docker exec vhdev bash -c "cat $SRC/valhalla/baldr/graphid.h $SRC/valhalla/thor/edgestatus.h | md5sum")
+sum1=$(docker exec vhdev bash -c "cd $SRC && cat $WEDRIVE_FILES | md5sum")
 docker exec vhdev bash -c "bash /tmp/wedrive-verify/apply-patches.sh $SRC" >/dev/null 2>&1
-sum2=$(docker exec vhdev bash -c "cat $SRC/valhalla/baldr/graphid.h $SRC/valhalla/thor/edgestatus.h | md5sum")
+sum2=$(docker exec vhdev bash -c "cd $SRC && cat $WEDRIVE_FILES | md5sum")
 note "дерево не изменилось" "$([ "$sum1" = "$sum2" ] && echo OK || echo ПРОВАЛ)"
 
 echo
@@ -82,6 +92,20 @@ note "маршрутов найдено: $routes (ожидается 7)" "$([ "$
 note "NO ROUTE без порталов: $noroute (ожидается 2)" "$([ "$noroute" = "2" ] && echo OK || echo ПРОВАЛ)"
 note "прогонов с потерей региона: $lost" "$([ "$lost" = "0" ] && echo OK || echo ПРОВАЛ)"
 note "разрывов геометрии: $gaps" "$([ "$gaps" = "0" ] && echo OK || echo ПРОВАЛ)"
+
+echo
+echo "=== 9. полный сервис через границу: композит против монолита"
+# Главная приёмка: четыре службы, каждая со своим обходом графа, на одних и тех же парах.
+if docker exec vhdev test -f /regions/mono_full.json && docker exec vhdev test -f /regions/mr_bc.json; then
+  bash "$HERE/tools/service-regress.sh" > /tmp/service.log 2>&1
+  bad=$(grep -c 'РАСХОЖДЕНИЕ' /tmp/service.log || true)
+  lost=$(grep -oE 'ПОТЕРЬ РЕГИОНА[^0-9]*[0-9]+' /tmp/service.log | grep -oE '[0-9]+$' || echo 1)
+  sed 's/^/   /' /tmp/service.log
+  note "расхождений сверх допуска: $bad" "$([ "$bad" = "0" ] && echo OK || echo ПРОВАЛ)"
+  note "потерь региона: $lost" "$([ "$lost" = "0" ] && echo OK || echo ПРОВАЛ)"
+else
+  echo "   пропущено: нет /regions/mono_full.json или /regions/mr_bc.json"
+fi
 
 echo
 [ $fail -eq 0 ] && echo "ВСЁ ЗЕЛЁНОЕ — репозиторий самодостаточен" \

@@ -40,7 +40,10 @@ for f in valhalla/baldr/nodeinfo.h valhalla/baldr/graphid.h valhalla/baldr/graph
          src/baldr/graphtile.cc src/baldr/graphreader.cc src/sif/recost.cc \
          src/thor/bidirectional_astar.cc src/thor/map_matcher.cc \
          src/loki/trace_route_action.cc valhalla/meili/candidate_search.h \
-         src/meili/candidate_search.cc src/meili/map_matcher.cc src/meili/routing.cc; do
+         src/meili/candidate_search.cc src/meili/map_matcher.cc src/meili/routing.cc \
+         valhalla/loki/search.h src/loki/route_action.cc src/loki/matrix_action.cc \
+         src/loki/isochrone_action.cc src/loki/locate_action.cc src/loki/worker.cc \
+         valhalla/thor/dijkstras.h src/thor/dijkstras.cc src/thor/costmatrix.cc; do
   printf '   %-42s %s\n' "$f" "$(grep -c WEDRIVE "$SRC/$f" 2>/dev/null || echo '-')"
 done
 
