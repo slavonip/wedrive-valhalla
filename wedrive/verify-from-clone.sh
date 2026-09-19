@@ -57,6 +57,25 @@ sum2=$(docker exec vhdev bash -c "cd $SRC && cat $WEDRIVE_FILES | md5sum")
 note "дерево не изменилось" "$([ "$sum1" = "$sum2" ] && echo OK || echo ПРОВАЛ)"
 
 echo
+
+echo
+echo "=== 3b. патчи ложатся на дерево по ДРУГОМУ пути (так работает CI и Android-сборка)"
+# Шаги 1-3 применяют патчи к /src/valhalla. Это слепое пятно по построению: патч, в котором путь
+# зашит константой, проходит их даром — он правит ровно то дерево, которое проверяется. Именно так
+# patch-32-fix-reverse-side полгода выглядел рабочим, объявляя путь одной строкой вместе с именем
+# файла: apply-patches.sh подменяет точное `SRC = "/src/valhalla"` с закрывающей кавычкой, по нему
+# не срабатывал, патч правил настоящий /src/valhalla, находил там прошлую работу, печатал «уже
+# исправлено» и выходил с кодом 0. В контейнере ноль провалов; в CI и в свежем клоне — тринадцать
+# диагностических патчей подряд на «ожидал 1 совпадение, нашёл 2».
+# Дерево берётся git-worktree, а не копией: это стоковый снимок HEAD по другому пути, без build/
+# и без второй копии истории.
+docker exec vhdev bash -c "cd $SRC && git worktree remove --force /tmp/otherpath 2>/dev/null; rm -rf /tmp/otherpath; git worktree add --detach -f /tmp/otherpath HEAD >/dev/null 2>&1 && bash /tmp/wedrive-verify/apply-patches.sh /tmp/otherpath" > /tmp/otherpath.log 2>&1
+rc=$?
+bad=$(grep -c '!!' /tmp/otherpath.log 2>/dev/null || echo 0)
+note "apply-patches.sh на чужом пути (код $rc, упавших $bad)" \
+     "$([ "$rc" = 0 ] && [ "$bad" = 0 ] && echo OK || echo ПРОВАЛ)"
+[ "$bad" != 0 ] && grep '!!' /tmp/otherpath.log | head -5 | sed 's/^/      /'
+echo
 echo "=== 4. сборка"
 errs=$(docker exec vhdev bash -c "make -C $SRC/build -j\$(nproc) 2>&1 | grep -cE 'error:'")
 note "ошибок компиляции: $errs" "$([ "$errs" = "0" ] && echo OK || echo ПРОВАЛ)"
