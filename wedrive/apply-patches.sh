@@ -38,7 +38,9 @@ echo "=== маркеры WEDRIVE по файлам (ноль где-либо = �
 for f in valhalla/baldr/nodeinfo.h valhalla/baldr/graphid.h valhalla/baldr/graphtile.h valhalla/baldr/graphreader.h \
          valhalla/sif/edgelabel.h valhalla/thor/pathalgorithm.h valhalla/thor/edgestatus.h \
          src/baldr/graphtile.cc src/baldr/graphreader.cc src/sif/recost.cc \
-         src/thor/bidirectional_astar.cc; do
+         src/thor/bidirectional_astar.cc src/thor/map_matcher.cc \
+         src/loki/trace_route_action.cc valhalla/meili/candidate_search.h \
+         src/meili/candidate_search.cc src/meili/map_matcher.cc src/meili/routing.cc; do
   printf '   %-42s %s\n' "$f" "$(grep -c WEDRIVE "$SRC/$f" 2>/dev/null || echo '-')"
 done
 

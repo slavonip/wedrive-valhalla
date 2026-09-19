@@ -162,6 +162,109 @@ that moved are Chișinău → Bucharest and its reverse, both by ~13 km, both on
 > partial edge), and the meeting edge itself (`pred.opp_edgeid() == opp_pred.edgeid()`, equal with
 > the region tag and without it).
 
+## Map matching — Meili has its own everything
+
+`map_matcher` was taken next because a car crossing a border needs its GPS snapped there, and it
+was the riskiest of the three: Meili does not use Thor. It has its own candidate search
+(`candidate_search.cc`), its own expansion (`routing.cc`) and its own cost model, and not one of
+the Thor patches touched any of it.
+
+Measured first, on a 770-point trace sampled at 150 m from the monolith's own Chisinau -> Iasi
+shape:
+
+| | monolith | composite, before |
+|---|---|---|
+| points matched | 770 / 770 | **638 / 770** |
+| first failure | none | **#633 at 47.31478, 27.60826** — the Prut crossing itself |
+
+Loki found Romanian candidates, so the last point matched; what failed was routing *between* an
+MD candidate and an RO one. Seven defects were behind it, and only the first was the expected one:
+
+1. **No portal expansion in Meili's `expand`** — the same block as Thor's, next to `NodeTransition`.
+2. **Region dropped when an id is assembled from parts**: `GraphId{node.tileid(), node.level(),
+   nodeinfo->edge_index()}`, and `directededge->endnode()` where it selects a tile.
+3. **A fourth namespace-unaware container**, after `FlatTileCache`, `EdgeStatus` and
+   `shortcut_recovery_t`: `CandidateGridQuery::grid_cache_` is keyed by `int32_t bin_id` — pure
+   geography, the same square numbered identically in every region.
+4. **Candidate search ran in one region only**; multiplexed per region like `loki::Search`.
+5. **`expand(trans->endnode(), ...)`** dropped the region on every hierarchy change.
+6. **Portals were gated on `!from_transition`.** Portals exist at level 0 (14 pairs) and level 2
+   (2 pairs); Meili reaches level 0 *only* through a transition, so that one flag hid every
+   level-0 crossing. Two independent prohibitions need two flags.
+7. **`loki_worker_t::locations_from_shape`** — a second, separate `search_.search` that patch 23
+   never touched, so the trace's own endpoints were correlated in one region.
+8. **The origin was seeded untagged.** `directed_edge->endnode()` in the origin-edge branch, where
+   the search is *born*. Everything downstream then propagated region 0 faithfully.
+
+> **Two of those were found by the region-lost detector naming its own call site, not by reading
+> code.** It prints a backtrace for the first six losses, and it pointed straight at
+> `locations_from_shape` and then at `find_shortest_path` — both places I was not looking. The
+> detector has now paid for itself twice over.
+
+### The one that took longest was a comparison, not a lookup
+
+With every id tagged, matching still lost 76 points *inside Moldova*, nowhere near a border. The
+controls were config-only and they were decisive:
+
+| | edges | unmatched |
+|---|---|---|
+| stock, no regions | 702 | 0 |
+| one region registered | 702 | 0 |
+| two regions, second an **empty directory** | 479 | **76** |
+| two regions, tag stripped from candidates | 702 | 0 |
+
+An empty second region contributes nothing, so the damage was the tag itself. And a stage probe
+showed routing was innocent: **653 searches between states, zero empty, identical in all three
+runs**. The loss was downstream, in `FindMatchResult`:
+
+```cpp
+auto candidate_nodes = graph_reader.GetDirectedEdgeNodes(edge.id, tile);  // TAGGED
+...
+if (prev_de && prev_de->endnode() == candidate_node)                      // RAW
+```
+
+A tagged node compared against a raw one. With one region both are 0 and it works; with two they
+can never be equal, so every candidate sitting *on a node* fails to be recognised and its point is
+reported unmatched. That is why the failures were scattered at intersections rather than at the
+frontier.
+
+**Result: 770 / 770, and 150.064 km against the monolith's 150.059.**
+
+> **The harness lied twice in one hour, both times by my own hand, and both times it pointed the
+> investigation backwards.** `grep -c` exits 1 when the count is zero, so `make ... | grep -c error:
+> && make install` silently skipped the install and a whole round of measurements ran against a
+> stale binary. And `docker exec -e VAR=""` *sets* the variable, so `getenv() != nullptr` is true
+> for it — the run labelled "tag kept" had the tag stripped, which made the decisive experiment
+> read as "no difference". Neither is a Valhalla fact; both are why the numbers above were
+> re-measured on a known-good build before being believed.
+
+### A finding that favours the architecture
+
+Comparing manoeuvre counts turned up something that is not a composite defect at all:
+
+| route | monolith | composite |
+|---|---|---|
+| Chisinau -> Balti (internal) | 25 | 26 |
+| Chisinau -> Cahul (internal) | 28 | 28 |
+| Iasi -> Bucharest (internal) | 48 | 48 |
+| Bucharest -> Cluj (internal) | 44 | 46 |
+| **Chisinau -> Iasi (crosses)** | **325** | **35** |
+| **Chisinau -> Bucharest (crosses)** | **87** | **59** |
+
+Internal routes agree to within a manoeuvre or two. The blow-up happens only when the route
+crosses the frontier, and the extra instructions are 33 consecutive *"Keep left / right / straight
+**to stay on** M1/E 581"* inside one 2.4 km stretch — the Leuseni-Albita complex. A single-pass
+build ingests two Geofabrik extracts that **overlap at the border**, so the shared strip is
+imported twice and every node there reads as a fork. The composite, holding each country in its
+own graph and joining them with portals, does not have that problem.
+
+Rebuilding the reference with a full config and a real admin database changed nothing (456.458 km
+and 87 manoeuvres either way), which rules out the build config and leaves the overlap.
+
+**Not yet proven:** the duplication itself was inferred from the instruction text and the fact
+that it is confined to the border; a probe at one point on M1 found no duplicate edges, so the
+exact mechanism is still open. Recorded as a lead, not a result.
+
 ## Next
 
 1. Teach Thor's bidirectional A* the same re-tagging rule and the portal expansion.
