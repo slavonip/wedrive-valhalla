@@ -30,8 +30,10 @@ import json, sys
 t = open(sys.argv[1], encoding='utf-8', errors='replace').read()
 action = sys.argv[2]
 def jload(prefix):
+    # raw_decode, а не loads: valhalla_service может дописать строку лога ПОСЛЕ ответа, и
+    # тогда loads падает на "Extra data" — ответ есть, а инструмент рапортует об ошибке.
     i = t.find(prefix)
-    return json.loads(t[i:]) if i >= 0 else None
+    return json.JSONDecoder().raw_decode(t[i:])[0] if i >= 0 else None
 try:
     if action in ('route', 'trace_route'):
         print('%.3f' % jload('{"trip"')['trip']['summary']['length'])
