@@ -212,7 +212,7 @@ int main(int argc, char** argv) {
   }
 
   std::cout << "режим " << mode << "   регионов " << reader.RegionCount() << "   порталов "
-            << reader.PortalCount() << " (загружено " << portals << ")\n";
+            << reader.PortalCount() << " (в файле " << portals << ", отвергнуто " << reader.PortalsRejected() << ")\n";
 
   const Snap so = NearestNode(reader, regions, origin_ll);
   const Snap sd = NearestNode(reader, regions, dest_ll);

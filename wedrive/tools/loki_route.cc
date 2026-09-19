@@ -176,7 +176,7 @@ int main(int argc, char** argv) {
     portals = LoadPortals(reader, argv[7]);
   }
   std::cout << "регионов " << reader.RegionCount() << "   порталов " << reader.PortalCount()
-            << " (загружено " << portals << ")\n";
+            << " (в файле " << portals << ", отвергнуто " << reader.PortalsRejected() << ")\n";
 
   Api api;
   valhalla::ParseApi(
