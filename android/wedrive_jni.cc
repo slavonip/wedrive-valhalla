@@ -9,9 +9,14 @@
 // регионов умеет, какие размеры меток, переживает ли регион set_id — то самое место, где он
 // терялся.
 //
-// ВТОРАЯ — собственно маршрутизация через actor_t, тот же способ встраивания, которым
-// пользуется и valhalla-mobile. Конфиг приходит строкой JSON, потому что именно в нём живут
-// wedrive_regions и wedrive_portals: приложение собирает его из манифеста, а не хранит зашитым.
+// ВТОРАЯ — работа через actor_t, тот же способ встраивания, которым пользуется и
+// valhalla-mobile. Конфиг приходит строкой JSON, потому что именно в нём живут wedrive_regions
+// и wedrive_portals: приложение собирает его из манифеста, а не хранит зашитым.
+//
+// Наружу отдаются ДВА действия, и второе не менее обязательно, чем первое: route и
+// trace_attributes. На привязке к дорогам в приложении держатся съезды с кругов, знаки
+// ограничения скорости, часовой пояс прибытия, счёт пересечённых границ и ленты пробок —
+// движок, умеющий только маршрут, выключает их все разом и молча.
 //
 // Функции без JNIEnv оставлены экспортированными: они не требуют виртуальной машины и потому
 // вызываются из CI сразу после сборки, где никакой Java нет. Проверять .so только через
@@ -20,6 +25,7 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 
@@ -39,6 +45,12 @@ struct WeDriveEngine {
   boost::property_tree::ptree config;
   std::unique_ptr<valhalla::tyr::actor_t> actor;
   std::string last_error;
+  // actor_t держит воркеров loki/thor/odin с их собственным состоянием и НЕ потокобезопасен.
+  // Приложению это не видно: маршрут считается в одной корутине, а привязка лент пробок к
+  // дорогам — в другой, и они встречаются на одном actor_t. Без замка это падение процесса,
+  // а не неверный ответ, то есть худший вид отказа. Сериализация здесь допустима: долгий
+  // маршрут задержит привязку на секунды, и привязка подождёт.
+  std::mutex lock;
 };
 
 std::string jstr(JNIEnv* env, jstring s) {
@@ -175,13 +187,51 @@ Java_com_wedrive_data_NativeValhalla_nativeRoute(JNIEnv* env, jclass, jlong hand
   if (!e || !e->actor) {
     return nullptr;
   }
+  const std::string request = jstr(env, request_json);
   try {
-    const std::string out = e->actor->route(jstr(env, request_json));
+    std::lock_guard<std::mutex> guard(e->lock);
+    const std::string out = e->actor->route(request);
     return env->NewStringUTF(out.c_str());
   } catch (const std::exception& ex) {
     e->last_error = ex.what();
   } catch (...) {
     e->last_error = "неизвестная ошибка при построении маршрута";
+  }
+  return nullptr;
+}
+
+/**
+ * Привязывает точки к дорогам и отдаёт атрибуты пройденных рёбер — `trace_attributes`.
+ *
+ * **Почему это НЕ довесок к маршруту, а вторая половина работы движка.** На нём в приложении
+ * держатся четыре вещи сразу: номер съезда с круга (по топологии пройденных рёбер), знак
+ * ограничения скорости, часовой пояс точки прибытия и число пересечённых границ — плюс
+ * привязка лент пробок к нашим же дорогам. Отдать наружу один только `route` значит молча
+ * выключить их все: приложение продолжит ехать, но перестанет знать, где съезжать.
+ *
+ * **Отдельный риск, который здесь и проверяется.** Meili не пользуется Thor: у него своя
+ * выборка кандидатов, своё расширение и своя модель стоимости, и ни один из патчей маршрута
+ * его не касался (патчи 47–64 сделаны отдельно). Поэтому «маршрут через границу построился»
+ * ничего не говорит о том, что через ту же границу пройдёт привязка.
+ *
+ * Возвращает null при отказе; причина — в nativeLastError.
+ */
+JNIEXPORT jstring JNICALL
+Java_com_wedrive_data_NativeValhalla_nativeTraceAttributes(JNIEnv* env, jclass, jlong handle,
+                                                           jstring request_json) {
+  auto* e = reinterpret_cast<WeDriveEngine*>(handle);
+  if (!e || !e->actor) {
+    return nullptr;
+  }
+  const std::string request = jstr(env, request_json);
+  try {
+    std::lock_guard<std::mutex> guard(e->lock);
+    const std::string out = e->actor->trace_attributes(request);
+    return env->NewStringUTF(out.c_str());
+  } catch (const std::exception& ex) {
+    e->last_error = ex.what();
+  } catch (...) {
+    e->last_error = "неизвестная ошибка при привязке к дорогам";
   }
   return nullptr;
 }
