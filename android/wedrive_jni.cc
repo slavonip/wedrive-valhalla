@@ -144,9 +144,19 @@ Java_com_wedrive_data_NativeValhalla_nativeCreate(JNIEnv* env, jclass, jstring c
   try {
     std::istringstream in(jstr(env, config_json));
     boost::property_tree::read_json(in, e->config);
-    // auto_cleanup = false: движок живёт столько же, сколько сессия навигации, и чистить
-    // воркеров после каждого запроса значило бы сбрасывать кеш тайлов на каждом перестроении.
-    e->actor = std::make_unique<valhalla::tyr::actor_t>(e->config, false);
+    // auto_cleanup = TRUE, и прежнее false здесь роняло процесс.
+    //
+    // Измерено на устройстве 2026-09-20: ПЕРВЫЙ trace_attributes отдаёт 89 КБ атрибутов,
+    // ВТОРОЙ на тех же самых точках падает с SIGSEGV в build_trace. География ни при чём —
+    // это проверено повтором одного участка, — виновато состояние между запросами.
+    // `thor_worker_t::cleanup()` делает `trace.clear()` и `matcher_factory.ClearFullCache()`;
+    // без него второй разбор берёт индексы совпадений от ПРЕДЫДУЩЕГО запроса и адресует ими
+    // `options.shape()` нового, выходит за границы и пишет по нулю.
+    //
+    // Прежний довод — «cleanup сбросит кеш тайлов на каждом перестроении» — был неверен по
+    // фактам: и thor, и loki трогают читателя только `if (reader->OverCommitted())`, а
+    // кеш кандидатов чистят лишь сверх своего порога. Обычный вызов не выбрасывает ничего.
+    e->actor = std::make_unique<valhalla::tyr::actor_t>(e->config, true);
   } catch (const std::exception& ex) {
     // Не бросаем наружу: исключение через границу JNI — это падение процесса, а не сообщение.
     e->last_error = ex.what();
