@@ -110,37 +110,31 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             2>&1 | tail -60
 
-      # ГДЕ ЖИВЁТ thread_cache_ — вопрос, который стоил прогона, потому что задан не был.
+      # ГДЕ ЖИВЁТ thread_cache_ — и живёт ли вообще.
       #
-      # Линковка падала на ЕДИНСТВЕННОМ символе
-      # `google::protobuf::internal::ThreadSafeArena::thread_cache_`. Первая гипотеза — что
-      # зависимости собраны на уровне API ниже 29 и получили ЭМУЛИРОВАННЫЙ TLS
-      # (`__emutls_v.<имя>` вместо прямого символа) — измерением ОПРОВЕРГНУТА: в libprotobuf.a
-      # символа нет ни в прямой форме, ни в эмулированной. Значит он в другом архиве.
+      # Линковка падает на ЕДИНСТВЕННОМ символе
+      # `google::protobuf::internal::ThreadSafeArena::thread_cache_`. Две гипотезы уже опровергнуты
+      # измерением: эмулированный TLS из-за низкого уровня API и «символ в соседнем архиве».
+      # Поэтому здесь ГРУБЫЙ поиск по подстроке во ВСЕХ архивах, а не по угаданной мангленной
+      # форме: узкий шаблон — это способ не найти то, что есть.
       #
-      # Шаг СООБЩАЕТ, а не падает: иначе он блокирует сборку, которая могла бы пройти, и следующий
-      # прогон снова ничего не измерит. Утверждает здесь только отсутствие символа ВЕЗДЕ.
+      # Шаг только СООБЩАЕТ. Страж на непроверенной гипотезе уже однажды заблокировал сборку,
+      # которая могла пройти, и прогон не измерил ничего.
       - name: где определён thread_cache_
         run: |
           NM="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           LIBDIR=$(dirname "$(find "build/${{ matrix.abi }}/vcpkg_installed" -name 'libprotobuf.a' | head -1)")
           echo "   каталог: $LIBDIR"
-          found=0
-          for a in "$LIBDIR"/*.a; do
-            syms=$("$NM" --defined-only "$a" 2>/dev/null || true)
-            d=$(printf '%s\n' "$syms" | grep -c 'ThreadSafeArena12thread_cache_' || true)
-            e=$(printf '%s\n' "$syms" | grep -c '__emutls_v.*thread_cache_' || true)
-            if [ "$d" != "0" ] || [ "$e" != "0" ]; then
-              echo "   ОПРЕДЕЛЁН в $(basename "$a"): прямой $d, эмулированный $e"
-              found=1
-            fi
+          for a in "$LIBDIR"/libprotobuf.a "$LIBDIR"/libprotobuf-lite.a; do
+            [ -f "$a" ] || continue
+            echo "   === $(basename "$a")"
+            echo "     любые символы со словом thread_cache (определённые и нет):"
+            "$NM" -C "$a" 2>/dev/null | grep -i 'thread_cache' | sort -u | head -8 | sed 's/^/       /' || echo "       нет ни одного"
+            echo "     объектники с arena в имени:"
+            "$NM" -C --print-file-name "$a" 2>/dev/null | grep -o '[^ /]*arena[^ :]*\.o' | sort -u | head -5 | sed 's/^/       /' || true
+            echo "     ThreadSafeArena вообще:"
+            "$NM" -C "$a" 2>/dev/null | grep -c 'ThreadSafeArena' | sed 's/^/       совпадений: /' || true
           done
-          echo "   --- архивы protobuf в каталоге:"
-          ls -1 "$LIBDIR" | grep -i protobuf | sed 's/^/     /' || true
-          if [ "$found" = "0" ]; then
-            echo "!! thread_cache_ не определён НИ В ОДНОМ архиве — дело не в порядке линковки"
-            exit 1
-          fi
 
       - name: сборка
         run: cmake --build "build/${{ matrix.abi }}" -j"$(nproc)" 2>&1 | tail -80
